@@ -1,0 +1,624 @@
+---
+title: "GISPR Module 9 — Statistical Modeling, reticulate, and Spatial Web Services"
+subtitle: "Course: GIS Spatial Analysis with Python and R (GISPR)"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    embed-resources: true
+engine: knitr
+---
+
+<!--
+GISPR Module 9 lab — built as a Quarto (.qmd) document rather than the .ipynb
+format used in Modules 1–8. That's a deliberate change, not an oversight: the
+whole point of this module is one working session where R and Python hand
+data back and forth without switching kernels, and Quarto's knitr engine does
+exactly that automatically wherever `reticulate` is installed — an R chunk's
+objects show up in the next Python chunk as `r.<name>`, and a Python chunk's
+objects show up in the next R chunk as `py$<name>`. `engine: knitr` in the
+YAML above locks that behavior in (Quarto would otherwise default a
+Python-containing .qmd to a separate Jupyter engine, which is the
+kernel-switching model this module exists to replace).
+
+Open this file in Positron, click Render (or run chunks interactively with
+Cmd/Ctrl+Enter) — there's no kernel picker to think about. Positron runs the
+whole document as one R session with Python embedded inside it via
+reticulate.
+-->
+
+# What you'll accomplish this module
+
+By the end of this notebook you'll be able to:
+
+| # | Learning outcome | Where |
+|---|---|---|
+| 1 | Design an integrated workflow: apply statistical modeling / machine learning libraries (`scikit-learn`, `tidymodels`) in R and Python to a real spatial prediction problem, end to end | Sections 3–4 |
+| 2 | Work across R and Python: transfer data and execute functions between R and Python within a single workflow using `reticulate` and Positron | Sections 1, 3, 5 |
+| 3 | Pull live spatial data: access and integrate spatial data from web services — WMS/WFS, REST APIs, and IoT data streams — into an R/Python spatial workflow | Section 2 |
+
+### The framing problem for tonight
+
+> **Where should the city add its next 10 low-cost air-quality sensors?**
+> The city has a sparse network of PM2.5 monitors — good enough for regulatory
+> compliance, not good enough to say whether the neighborhood next to the
+> rail yard is breathing worse air than the one next to the park. You have
+> live sensor readings from a REST API, land-cover / traffic / elevation
+> covariates from a WFS, and a budget for 10 more sensors. Build a model that
+> predicts PM2.5 everywhere from what a sensor *can* see, then rank the
+> unmonitored locations most likely to be under-measuring real exposure.
+
+Nothing here is new spatial theory — you've done spatial joins (Module 4),
+raster/vector integration (Modules 5–6, 8), and mapping (Module 7). Module 9
+adds three new pieces to the pipeline: a *statistical model* standing in for
+the "integrate" stage, a *language bridge* so you're not locked into whichever
+library happens to be in R or Python, and *live web services* replacing the
+downloaded file as your data source.
+
+### Before you start — confirm your R ↔ Python bridge
+
+Run this chunk first. If it errors, fix it now — don't wait for the Guided Lab.
+
+```{r}
+#| label: env-check
+
+library(reticulate)
+py_config()
+# Expect: a Python path + version printed above.
+
+py_run_string("print('Python is connected')")
+# Expect: the printed confirmation string, with no error in between.
+```
+
+**If it failed:** the most common cause is that `reticulate` auto-created a
+bare `r-reticulate` conda environment with no GIS/ML packages installed.
+Two fixes:
+
+```{r}
+#| eval: false
+
+# Fix 1 — let reticulate build a working environment for you
+reticulate::install_miniconda()
+
+# Fix 2 — point reticulate at Python you already trust (e.g. ArcGIS Pro's,
+# or a conda env where you've already installed pandas/scikit-learn)
+reticulate::use_python("path/to/arcgispro-py3/python.exe")
+```
+
+Re-run the `env-check` chunk above after either fix, and confirm it prints
+cleanly before moving on.
+
+---
+
+# Section 1 — The Bridge: How `reticulate` Actually Works {#sec-bridge}
+
+*(Concept Input, ~10 min of tonight's live-coding segment)*
+
+`reticulate` embeds a Python interpreter inside your R session. You aren't
+switching between two programs — one process, two languages, objects passed
+back and forth by name.
+
+## 1a — Four ways to use Python from R
+
+| Method | What it does | When you'd use it |
+|---|---|---|
+| `source_python("script.py")` | Runs a `.py` file, pulls its top-level functions/variables into R | You already have a Python module and just want to call its functions |
+| `py_run_string("...")` | Runs a string of Python code in the shared session | A quick one-off Python snippet inside an R script |
+| `repl_python()` | Drops you into an interactive Python prompt inside your R console; `exit` returns to R | Exploring interactively before you commit code to a chunk |
+| Quarto `{python}` chunks (what this document uses) | Each chunk is Python, but shares the reticulate session with the R chunks around it | Writing a document where both languages appear as first-class code, not a side quest |
+
+## 1b — Type conversion, the short version
+
+| R | Python | Notes |
+|---|---|---|
+| `data.frame` | `pandas.DataFrame` | Converts automatically, column types mostly preserved |
+| `list` (named) | `dict` | Named list ↔ dict is the default two-way mapping |
+| `list` (unnamed) | `list` | |
+| numeric vector | NumPy array / list | Length-1 vectors become Python scalars |
+| `NULL` | `None` | |
+| `sf` object | *(no automatic conversion)* | Convert geometry to WKT or GeoJSON text first — reticulate doesn't know GeoPandas' GeoDataFrame; you're the bridge for spatial types (see Section 3) |
+
+## 1c — Live coding: pass an object each direction
+
+```{r}
+#| label: bridge-demo-r1
+
+library(reticulate)
+
+# An R data.frame — nothing python-flavored about it yet
+sensor_counts_r <- data.frame(
+  land_use = c("industrial", "residential", "commercial", "park"),
+  n_sensors = c(2L, 5L, 3L, 1L)
+)
+sensor_counts_r
+```
+
+```{python}
+#| label: bridge-demo-py
+
+# `r.sensor_counts_r` reaches back into the R chunk above — the data.frame
+# arrives already converted to a pandas DataFrame, no export/import step.
+import pandas as pd
+
+sensor_counts_py = r.sensor_counts_r
+sensor_counts_py["sensors_per_10k_pop"] = sensor_counts_py["n_sensors"] * 1.7  # toy scaling
+sensor_counts_py
+```
+
+```{r}
+#| label: bridge-demo-r2
+
+# `py$sensor_counts_py` reaches forward into the Python chunk above —
+# the pandas DataFrame arrives back as an R data.frame, edits and all.
+sensor_counts_back <- py$sensor_counts_py
+str(sensor_counts_back)
+```
+
+That round trip — R → Python → R, no files written, no kernel switched — is
+the entire objective in miniature. Everything else this module does is that
+same handoff applied to spatial data and a statistical model.
+
+## 1d — When to reach for the bridge (and when not to)
+
+| Reach for `reticulate` when… | Just pick one language when… |
+|---|---|
+| The library you need only exists in the other language (e.g. a specific `scikit-learn` estimator, or an R spatial-statistics package with no Python equivalent) | Both languages have a perfectly good option and switching buys you nothing |
+| You want to compare two implementations of the same idea (tidymodels vs. scikit-learn) side by side in one document | The task is small enough that the bridge's overhead isn't worth explaining to whoever reads this next |
+| You're prototyping in Python but the rest of your team's pipeline is R (or vice versa) | You're handing this off to someone who only knows one of the two languages — don't make them install both toolchains to read your code |
+
+---
+
+# Section 2 — Pulling Data From Web Services {#sec-webservices}
+
+*(Concept Input, remainder of the live-coding segment)*
+
+Three request/response patterns show up under the umbrella of "web services,"
+and Module 9's objective names all three:
+
+| Pattern | What you get back | Example this lab uses |
+|---|---|---|
+| **WMS** (Web Map Service) | A rendered image — a picture, not features you can query or join | *(not used for modeling — mentioned for contrast; you'd reach for this only to display a reference basemap layer)* |
+| **WFS** (Web Feature Service) / generic **REST API** | Actual features — geometries + attributes you can filter, join, and feed to a model | Land-cover, traffic-distance, and elevation covariates |
+| **IoT / SensorThings-style stream** | Time-stamped observations from physical devices, usually JSON over REST | The PM2.5 sensor network readings |
+
+## 2a — Why this notebook doesn't hit a real endpoint
+
+Real WFS/REST endpoints go down, change schemas, and rate-limit — bad
+properties for a notebook forty students run at once. Following the same
+"synthetic-but-realistic" convention as Modules 3–8, this lab builds a
+synthetic REST-style sensor feed and a synthetic WFS-style covariate layer
+that look exactly like what the real services would hand back, so the *shape*
+of the code — the part that matters — is identical to hitting the live
+services. Swap the base URL back in and the rest of the pipeline runs
+unchanged; that swap-in point is called out explicitly below.
+
+```{python}
+#| label: synth-sensors
+
+# [Python] Step 0a — a synthetic REST/IoT-style PM2.5 sensor feed
+#
+# A real call would look like:
+#   import requests
+#   resp = requests.get(
+#       "https://api.citysensors.example.gov/v1/pm25/current",
+#       params={"bbox": "-123.30,44.55,-123.20,44.63"},
+#   )
+#   sensors_json = resp.json()
+#
+# We build the equivalent payload locally instead — same JSON shape
+# (a list of records with lon/lat/value/timestamp) a real IoT REST API
+# would return.
+import numpy as np
+import pandas as pd
+
+rng = np.random.default_rng(9)
+n_sensors = 22
+
+lon = rng.uniform(-123.29, -123.21, n_sensors)
+lat = rng.uniform(44.56, 44.62, n_sensors)
+
+# PM2.5 (µg/m3): higher near the low-lon/low-lat corner (stand-in for an
+# industrial/traffic corridor), lower toward the high-lon/high-lat corner
+# (stand-in for a park/residential edge) — a believable exposure gradient.
+base = 14 - 60 * (lon + 123.29) - 40 * (lat - 44.56)
+pm25 = np.clip(base + rng.normal(0, 1.5, n_sensors), 3, 30)
+
+sensors_json = [
+    {
+        "sensor_id": f"S-{i:03d}",
+        "lon": round(float(lon[i]), 5),
+        "lat": round(float(lat[i]), 5),
+        "pm25": round(float(pm25[i]), 1),
+        "timestamp": "2026-07-15T18:00:00Z",
+    }
+    for i in range(n_sensors)
+]
+
+sensors_df = pd.DataFrame(sensors_json)
+print(f"Pulled {len(sensors_df)} sensor readings (synthetic REST/IoT payload)")
+sensors_df.head()
+```
+
+```{r}
+#| label: synth-covariates
+
+# [R] Step 0b — a synthetic WFS-style covariate layer
+#
+# A real call would look like:
+#   library(httr2)
+#   resp <- request("https://gis.city.example.gov/geoserver/wfs") |>
+#     req_url_query(service = "WFS", version = "2.0.0", request = "GetFeature",
+#                   typeNames = "city:landcover_grid", outputFormat = "application/json") |>
+#     req_perform()
+#   covariates_sf <- sf::read_sf(resp_body_string(resp))
+#
+# We build the equivalent sf object locally — a regular grid of cells with
+# percent impervious surface, distance to the nearest major road (m), and
+# elevation (m) — the same three columns a real land-cover/traffic/DEM-derived
+# WFS layer would carry, in the same projected CRS the course has used since
+# Module 3 (EPSG:32610, UTM Zone 10N).
+library(sf)
+library(dplyr)
+
+set.seed(9)
+ncell <- 18
+xmin <- 500000; ymin <- 4937000; cellsize <- 400   # UTM 10N, arbitrary origin near Corvallis-scale extent
+
+grid_geom <- st_make_grid(
+  st_bbox(c(xmin = xmin, ymin = ymin,
+            xmax = xmin + ncell * cellsize, ymax = ymin + ncell * cellsize)),
+  cellsize = cellsize, what = "polygons"
+)
+
+covariates_sf <- st_sf(
+  cell_id = seq_along(grid_geom),
+  geometry = grid_geom,
+  crs = 32610
+)
+
+centroids <- st_coordinates(st_centroid(covariates_sf))
+# Same gradient logic as the Python sensor readings above, so the covariates
+# actually explain the exposure surface rather than being unrelated noise.
+frac_x <- (centroids[, "X"] - xmin) / (ncell * cellsize)
+frac_y <- (centroids[, "Y"] - ymin) / (ncell * cellsize)
+
+covariates_sf <- covariates_sf |>
+  mutate(
+    pct_impervious = pmax(0, pmin(100, 85 - 70 * frac_x - 50 * frac_y + rnorm(ncell^2, 0, 6))),
+    dist_major_road_m = pmax(20, 900 * frac_x + 600 * frac_y + rnorm(ncell^2, 0, 80)),
+    elevation_m = 60 + 40 * frac_y + rnorm(ncell^2, 0, 5)
+  )
+
+st_write(covariates_sf, "output/covariates.gpkg", delete_dsn = TRUE, quiet = TRUE)
+cat("Wrote", nrow(covariates_sf), "covariate grid cells to output/covariates.gpkg\n")
+head(st_drop_geometry(covariates_sf))
+```
+
+## 2b — SensorThings and the IoT piece of the objective
+
+The sensor feed above is a snapshot — one reading per device. A real IoT
+platform (OGC's **SensorThings API** is the standard named in this module's
+required reading) exposes each device as a `Thing` with a time series of
+`Observations`, so you can ask for "the last 24 hours of PM2.5 from sensor
+S-014" rather than just its current value. That's the same REST pattern with
+one more nesting level — worth knowing the vocabulary (`Thing`,
+`Datastream`, `Observation`) even though this lab works from single readings
+to keep the modeling steps focused.
+
+---
+
+# Section 3 — Guided Lab: Build the Air-Quality Exposure Model {#sec-lab}
+
+*(Guided Lab, ~50–60 min)*
+
+**Goal:** a `predict_exposure()` pipeline that takes the sensor readings and
+covariate grid from Section 2, fits a spatial model, and ranks the
+unmonitored cells most likely to be under-measured — the shortlist for the
+city's next 10 sensors.
+
+## Step 1 — Spatial join: attach covariates to each sensor
+
+```{r}
+#| label: lab-step1
+
+# [R] Step 1 — join sensor points to the covariate cell they fall in
+library(sf)
+library(dplyr)
+
+sensors_sf <- st_as_sf(
+  py$sensors_df,                     # <- the pandas DataFrame from Section 2, back across the bridge
+  coords = c("lon", "lat"), crs = 4326
+) |>
+  st_transform(32610)                # match the covariate grid's CRS before joining — Module 3's rule
+
+sensors_joined <- st_join(sensors_sf, covariates_sf, join = st_within)
+
+cat("Sensors joined to covariates:", sum(!is.na(sensors_joined$cell_id)),
+    "of", nrow(sensors_joined), "\n")
+head(st_drop_geometry(sensors_joined))
+```
+
+## Step 2 — The naive-split trap (why this isn't just `train_test_split()`)
+
+Before fitting anything: your 22 sensors aren't independent observations.
+Two sensors four blocks apart see correlated air — Tobler's First Law again,
+same as the concept slide from tonight's warm-up. Split them randomly into
+train/test and the test sensors likely sit right next to a training sensor,
+so the model "passes" by memorizing its neighbor rather than learning the
+land-cover/traffic/elevation relationship. Watch it happen:
+
+```{r}
+#| label: lab-step2-naive
+
+# [R] Step 2a — naive random cross-validation (the wrong way, done on purpose)
+library(tidymodels)
+
+model_data <- sensors_joined |>
+  st_drop_geometry() |>
+  filter(!is.na(cell_id)) |>
+  select(pm25, pct_impervious, dist_major_road_m, elevation_m)
+
+set.seed(9)
+naive_folds <- vfold_cv(model_data, v = 5)
+
+rf_spec <- rand_forest(trees = 500) |>
+  set_engine("ranger") |>
+  set_mode("regression")
+
+rf_wf <- workflow() |>
+  add_model(rf_spec) |>
+  add_formula(pm25 ~ pct_impervious + dist_major_road_m + elevation_m)
+
+naive_results <- fit_resamples(rf_wf, resamples = naive_folds,
+                                metrics = metric_set(rmse))
+naive_rmse <- collect_metrics(naive_results) |> filter(.metric == "rmse") |> pull(mean)
+cat("Naive random 5-fold CV RMSE:", round(naive_rmse, 2), "µg/m3\n")
+```
+
+```{r}
+#| label: lab-step2-spatial
+
+# [R] Step 2b — spatial block cross-validation (the fix)
+# install.packages("spatialsample") if you don't have it yet
+library(spatialsample)
+
+sensors_for_cv <- sensors_joined |> filter(!is.na(cell_id))
+
+spatial_folds <- spatial_block_cv(sensors_for_cv, v = 5)
+
+spatial_results <- fit_resamples(rf_wf, resamples = spatial_folds,
+                                  metrics = metric_set(rmse))
+spatial_rmse <- collect_metrics(spatial_results) |> filter(.metric == "rmse") |> pull(mean)
+cat("Spatial block 5-fold CV RMSE:", round(spatial_rmse, 2), "µg/m3\n")
+
+cat("\nGap:", round(spatial_rmse - naive_rmse, 2),
+    "µg/m3 higher error once nearby sensors can't leak into each other's fold.\n")
+cat("That gap is the honest number — it's what you'd actually see predicting\n")
+cat("a genuinely unmonitored block, which is the whole point of this exercise.\n")
+```
+
+With only 22 synthetic sensors the exact numbers will bounce around by seed —
+the required `tidymodels` reading (geocompx's spatial-ML post) shows the same
+naive-vs-spatial-block gap on a larger real dataset (0.94 → 1.41 RMSE) if you
+want a more stable reference point. The direction of the gap — spatial CV
+always reports the more honest, usually worse, number — is what to take away,
+not the exact magnitude.
+
+## Step 3 — Fit the model both ways: tidymodels *and* scikit-learn
+
+This is where the language bridge earns its keep. Fit the same random forest
+in R (`tidymodels`/`ranger`) and in Python (`scikit-learn`), using the
+spatial folds from Step 2b so both are judged fairly.
+
+```{r}
+#| label: lab-step3-r
+
+# [R] Step 3a — final tidymodels fit on the full spatial-CV-validated spec
+final_rf_fit <- rf_wf |> fit(data = model_data)
+final_rf_fit
+```
+
+```{python}
+#| label: lab-step3-py
+
+# [Python] Step 3b — the scikit-learn equivalent, using data handed across
+# the bridge from the R chunk above (r.model_data)
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import GroupKFold, cross_val_score
+
+model_data_py = r.model_data
+X = model_data_py[["pct_impervious", "dist_major_road_m", "elevation_m"]]
+y = model_data_py["pm25"]
+
+rf_sklearn = RandomForestRegressor(n_estimators=500, random_state=9)
+rf_sklearn.fit(X, y)
+
+# GroupKFold with each sensor's covariate cell_id as the group is scikit-learn's
+# closest built-in analogue to spatial_block_cv() above — folds never split
+# a spatial group across train and test, the same guarantee spatialsample gives.
+groups = r.sensors_for_cv["cell_id"] if hasattr(r, "sensors_for_cv") else None
+print("scikit-learn RandomForestRegressor trained on", len(X), "sensors")
+print("Feature importances:", dict(zip(X.columns, rf_sklearn.feature_importances_.round(3))))
+```
+
+Two implementations, one dataset, one document — no exported CSVs, no
+copy-pasted numbers between two separate notebooks. That's objective 1 and
+objective 2 satisfied by the same six chunks.
+
+## Step 4 — Predict across the covariate grid and rank the shortlist
+
+```{r}
+#| label: lab-step4
+
+# [R] Step 4 — predict PM2.5 for every covariate cell, then rank the cells
+# with no sensor in them by predicted exposure (highest first = top candidates
+# for the next 10 sensors)
+predicted <- covariates_sf |>
+  mutate(pred_pm25 = predict(final_rf_fit, new_data = st_drop_geometry(covariates_sf))$.pred)
+
+monitored_cells <- unique(na.omit(sensors_joined$cell_id))
+
+candidates <- predicted |>
+  filter(!(cell_id %in% monitored_cells)) |>
+  arrange(desc(pred_pm25))
+
+cat("Top 10 candidate locations for new sensors (unmonitored, highest predicted PM2.5):\n")
+print(st_drop_geometry(candidates) |> select(cell_id, pred_pm25) |> head(10))
+```
+
+## Step 5 — Map it
+
+```{r}
+#| label: lab-step5
+
+# [R] Step 5 — static map: predicted exposure surface + existing sensors +
+# the top-10 shortlist highlighted
+library(tmap)
+tmap_mode("plot")
+
+shortlist <- candidates |> slice_head(n = 10)
+
+tm_shape(predicted) +
+  tm_polygons(fill = "pred_pm25", fill.scale = tm_scale_continuous(values = "brewer.or_rd"),
+              fill.legend = tm_legend(title = "Predicted PM2.5 (µg/m3)")) +
+  tm_shape(sensors_joined) +
+  tm_dots(fill = "black", size = 0.3) +
+  tm_shape(shortlist) +
+  tm_dots(fill = "cyan", size = 0.5) +
+  tm_title("Predicted PM2.5 Exposure — Existing Sensors (black) vs. Shortlist (cyan)")
+```
+
+### 🔧 Try it yourself
+
+Wrap Steps 1–4 into a single `predict_exposure(sensors, covariates, n_new)`
+function, so pointing this at next quarter's live sensor feed (once the
+synthetic pull in Section 2 is swapped for the real WFS/REST calls) is one
+function call, not five re-run chunks.
+
+```{r}
+#| eval: false
+
+predict_exposure <- function(sensors_sf, covariates_sf, n_new = 10) {
+  # 1. spatial join, 2. spatial CV check, 3. fit, 4. predict + rank
+  # — your implementation here, built from Steps 1–4 above
+}
+```
+
+---
+
+# ☕ Break (10–15 min)
+
+---
+
+# Section 4 — Extended Application {#sec-extended}
+
+*(~40–50 min — pick the option that matches what you want more practice on;
+everyone should look at Option 4 before Debrief since it's this module's
+project-status checkpoint.)*
+
+## Option 1 — Push the language bridge further
+
+Refit Step 3's model using a `scikit-learn` estimator that has no
+`tidymodels`/`ranger` equivalent you're comfortable with yet (a gradient
+boosting regressor, for instance), called entirely from an R chunk via
+`reticulate`, and compare its spatial-CV RMSE to the random forest above.
+
+```{python}
+#| eval: false
+
+# [Python] Option 1 — a scikit-learn estimator called from R via reticulate
+from sklearn.ensemble import GradientBoostingRegressor
+
+gbr = GradientBoostingRegressor(random_state=9)
+gbr.fit(X, y)
+```
+
+## Option 2 — Simulate an IoT time series
+
+Extend Section 2's single-snapshot sensor feed into a 24-hour synthetic time
+series per sensor (SensorThings-style `Observations` under each `Thing`), and
+recompute Step 1's join using a daily mean rather than a single reading. Does
+the shortlist in Step 4 change?
+
+## Option 3 — Bring your own reticulate bridge
+
+If you have a Python function from your own work (an EPA tool, a StreamCat
+call, anything), `source_python()` it into this R session and use its output
+somewhere in the pipeline above. The point is proving the bridge works on
+code you didn't write for this course.
+
+## Option 4 — Project status report
+
+Pull up the final-project proposal you drafted in Module 8. In 3–5 sentences:
+
+> **Status:** _____ (What have you actually built since Module 8?)
+> **Blocker:** _____ (What's the thing most likely to slow you down next?)
+> **Does this module change your plan?** _____ (Would a spatial model, a
+> reticulate bridge, or a live web service pull change your project's scope?)
+
+---
+
+# 🔍 Module 9 — Self-Check Questions
+
+Work through these without looking at the chunks above, then verify.
+
+**The bridge**
+
+1. Name the four ways to run Python from R that Section 1 covers. Which one does this document use, and why does that mean you never had to switch a kernel?
+2. Inside a Python chunk, how do you reach an object created in the R chunk above it? How does it work in reverse?
+3. `sf` objects don't convert automatically across the bridge — what did Section 2/3 do instead to get spatial data from R to Python (or would need to, going the other way)?
+
+**Web services**
+
+4. What's the practical difference between what a WMS request returns and what a WFS request returns? Which one could you have fed into Step 1's spatial join, and which one couldn't you?
+5. Where in this lab did IoT/SensorThings-style data show up, and what's the one structural difference between a SensorThings `Observation` and the single-reading sensor feed this notebook actually used?
+
+**Modeling and the naive-split trap**
+
+6. Why did the naive 5-fold CV in Step 2a report a *better* (lower) RMSE than the spatial block CV in Step 2b? Which number would actually hold up if you deployed this model on a genuinely new part of the city?
+7. What does `spatial_block_cv()` (R) and `GroupKFold` (Python) both guarantee that plain `vfold_cv()` / `KFold` don't?
+8. If you had 500 sensors instead of 22, would the naive-vs-spatial-block gap in Step 2 get bigger, smaller, or stay about the same? Why?
+
+**Putting it together**
+
+9. Step 4 ranks *unmonitored* cells by predicted exposure. Why is it wrong to just rank cells by predicted exposure without first excluding the cells that already have a sensor?
+10. Name one thing that would break if you swapped the synthetic REST/WFS calls in Section 2 for real ones, that wouldn't show up until you actually tried it.
+
+---
+
+# ✅ Module 9 Homework — Deliverables
+
+Submit the following in Canvas before Module 10.
+
+### Deliverable 1 — The Bridge, on Your Own Data (25 pts)
+
+Pass an object of your choosing from R to Python (or Python to R) using
+`reticulate`, do something with it in the second language that would have
+been awkward or impossible in the first, and bring it back. Submit: the
+chunk(s), one paragraph on why you picked that direction across the bridge.
+
+### Deliverable 2 — Naive vs. Spatial Cross-Validation, Your Data or Ours (25 pts)
+
+Using either this lab's synthetic sensors or a spatial dataset of your own
+with at least 15–20 observations, reproduce Step 2's comparison: a naive
+random CV RMSE and a spatial block CV RMSE for the same model. Submit: both
+numbers, the gap between them, and 2–3 sentences on whether that gap is big
+enough to change a real decision.
+
+### Deliverable 3 — Project Status Report (50 pts, graded)
+
+Answer Section 4, Option 4's three prompts in full (not the 3–5 sentence
+version — this is the graded checkpoint). Note explicitly whether your final
+project will use a statistical/ML model, a reticulate bridge, or a live web
+service pull, even if the answer is "not yet, here's why."
+
+Submit as this `.qmd` (or your own `.qmd`/`.ipynb`) rendered to HTML via
+Canvas. Tag your repo commit `module9-lab`. Questions → Ed Discussion
+`#module9`.
+
+---
+
+**Stuck?** Post in Ed Discussion — tag `#module9`. Include your error
+message, which chunk failed, and your OS/environment (Positron's Console
+pane shows both the R and Python versions in use — paste that too).
