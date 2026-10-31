@@ -30,7 +30,7 @@ getwd()   # should end in /my-quarto-site
 
 If it doesn't, run `setwd("path/to/my-quarto-site")` first.
 
-Then paste this block into the **Console** and press Enter. It creates the same starter files as Quarto's website template, sends the rendered site to `docs/`, adds `.nojekyll`, and updates `.gitignore`:
+Then paste this block into the **Console** and press Enter. It creates the same starter files as Quarto's website template, sends the rendered site to `docs/`, and updates `.gitignore`:
 
 ```r
 # _quarto.yml: project settings. output-dir: docs is what makes GitHub Pages work
@@ -75,9 +75,6 @@ writeLines(c(
 # Custom styles (empty for now)
 writeLines("/* css styles */", "styles.css")
 
-# .nojekyll: tells GitHub Pages to serve files as-is instead of running Jekyll
-file.create(".nojekyll")
-
 # Ignore Quarto's internal working folder (but NOT docs/, which is your published site)
 gi <- if (file.exists(".gitignore")) readLines(".gitignore") else character()
 if (!"/.quarto/" %in% gi) cat("\n/.quarto/\n", file = ".gitignore", append = TRUE)
@@ -85,7 +82,7 @@ if (!"/.quarto/" %in% gi) cat("\n/.quarto/\n", file = ".gitignore", append = TRU
 list.files(all.files = TRUE, no.. = TRUE)
 ```
 
-The last line lists the repo folder. You should see `_quarto.yml`, `index.qmd`, `about.qmd`, `styles.css`, `.nojekyll`, `.gitignore`, and `README.md`.
+The last line lists the repo folder. You should see `_quarto.yml`, `index.qmd`, `about.qmd`, `styles.css`, `.gitignore`, and `README.md`.
 
 > **Prefer clicking?** You can also create each file with **File → New File…**, type the contents shown above, and save it in the repo folder. The R block just does this in one step.
 
@@ -101,6 +98,16 @@ The last line lists the repo folder. You should see `_quarto.yml`, `index.qmd`, 
 
    A `docs/` folder appears containing `index.html`, `about.html`, and the rest of the site.
 
+4. Check that `docs/` contains a `.nojekyll` file. Quarto normally writes it there when it renders a website. In the R Console:
+
+   ```r
+   file.exists("docs/.nojekyll")              # should be TRUE
+   # If FALSE, create it:
+   file.create("docs/.nojekyll")
+   ```
+
+> **What is `.nojekyll`?** GitHub Pages runs every branch-published site through Jekyll, its built-in site generator, unless it finds an empty file named `.nojekyll` at the root of the publishing folder. Quarto has already built the finished site, so `.nojekyll` tells GitHub to serve the files as they are. Jekyll would otherwise skip files and folders whose names start with `_` or `.`, and could reprocess pages. You publish from `docs/`, so the file has to be at `docs/.nojekyll`; one at the repo root has no effect.
+
 > **Why render the whole project?** Preview only rebuilds the page you're looking at. **Quarto: Render Project** rebuilds every page into `docs/`, so do it before each push.
 
 > **R code in your pages?** If a `.qmd` page includes R code chunks, install the packages Quarto uses to run them (once): `install.packages(c("rmarkdown", "knitr"))`.
@@ -111,7 +118,7 @@ The last line lists the repo folder. You should see `_quarto.yml`, `index.qmd`, 
 
 In **Source Control** (`Ctrl+Shift+G`):
 
-1. Stage everything: `_quarto.yml`, the `.qmd` files, `styles.css`, `.gitignore`, `.nojekyll`, and the **`docs/`** folder.
+1. Stage everything: `_quarto.yml`, the `.qmd` files, `styles.css`, `.gitignore`, and the **`docs/`** folder (including `docs/.nojekyll`).
 2. Commit with a message like `Create Quarto website`.
 3. Click **Sync Changes** to push.
 
@@ -158,6 +165,6 @@ GitHub Pages republishes automatically after each push.
 | Only one page updated | Used Preview instead of rendering the project | **Quarto: Render Project**, then commit and push |
 | Changes pushed but not live yet | Deployment still running, or the browser cached the old page | Check the **Actions** tab; hard-refresh the browser (`Ctrl+F5`) |
 | 404 at the site URL | Pages set to `/ (root)`, or `docs/` was never pushed | Settings → Pages → Folder `/docs`; confirm `docs/index.html` is on GitHub |
-| Styles or images missing | `.nojekyll` missing | In the R Console: `file.create(".nojekyll")`, then commit and push |
+| Files or folders missing from the live site, or pages look reprocessed | GitHub ran Jekyll because `docs/.nojekyll` is missing | In the R Console: `file.create("docs/.nojekyll")`, then commit and push |
 | New page doesn't appear in the menu | Page not listed in `_quarto.yml` | Add it under `website: navbar:` and re-render |
 | `docs/` never appears | `output-dir: docs` missing from `_quarto.yml` | Add it under `project:` and re-render |
