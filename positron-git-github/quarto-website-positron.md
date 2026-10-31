@@ -75,9 +75,12 @@ writeLines(c(
 # Custom styles (empty for now)
 writeLines("/* css styles */", "styles.css")
 
-# Ignore Quarto's internal working folder (but NOT docs/, which is your published site)
+# .gitignore: un-ignore docs/ and ignore Quarto's internal working folder
+# (GitHub's R template ignores docs/ for pkgdown sites. Here docs/ IS the published site.)
 gi <- if (file.exists(".gitignore")) readLines(".gitignore") else character()
-if (!"/.quarto/" %in% gi) cat("\n/.quarto/\n", file = ".gitignore", append = TRUE)
+gi <- gi[!trimws(gi) %in% c("docs/", "docs", "/docs/", "/docs")]
+if (!"/.quarto/" %in% gi) gi <- c(gi, "", "/.quarto/")
+writeLines(gi, ".gitignore")
 
 list.files(all.files = TRUE, no.. = TRUE)
 ```
@@ -124,6 +127,8 @@ In **Source Control** (`Ctrl+Shift+G`):
 
 On GitHub, refresh the repo page and check that `docs/` is there.
 
+> **`docs/` not showing in Source Control?** Git hides ignored files, so if `docs/` never appears under *Changes*, it's being ignored. GitHub's R `.gitignore` template includes a `docs/` line (meant for pkgdown package sites). The Step 2 block removes it; if you made the files by hand, open `.gitignore`, delete the `docs/` line, save, and `docs/` will show up to stage.
+
 ---
 
 ## Step 5: Turn on GitHub Pages
@@ -164,6 +169,7 @@ GitHub Pages republishes automatically after each push.
 | Old version still showing | Forgot to render, so `docs/` didn't change | **Quarto: Render Project**, then commit and push `docs/` |
 | Only one page updated | Used Preview instead of rendering the project | **Quarto: Render Project**, then commit and push |
 | Changes pushed but not live yet | Deployment still running, or the browser cached the old page | Check the **Actions** tab; hard-refresh the browser (`Ctrl+F5`) |
+| Pages build fails: `No such file or directory ... /github/workspace/docs` | `docs/` never reached GitHub, usually because `.gitignore` contains `docs/` | Delete the `docs/` line from `.gitignore`, then stage and push `.gitignore` and `docs/` |
 | 404 at the site URL | Pages set to `/ (root)`, or `docs/` was never pushed | Settings → Pages → Folder `/docs`; confirm `docs/index.html` is on GitHub |
 | Files or folders missing from the live site, or pages look reprocessed | GitHub ran Jekyll because `docs/.nojekyll` is missing | In the R Console: `file.create("docs/.nojekyll")`, then commit and push |
 | New page doesn't appear in the menu | Page not listed in `_quarto.yml` | Add it under `website: navbar:` and re-render |
