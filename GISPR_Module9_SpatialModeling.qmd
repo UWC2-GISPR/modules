@@ -38,6 +38,20 @@ By the end of this notebook you'll be able to:
 | 2 | Work across R and Python: transfer data and execute functions between R and Python within a single workflow using `reticulate` and Positron | Sections 1, 3, 5 |
 | 3 | Pull live spatial data: access and integrate spatial data from web services — WMS/WFS, REST APIs, and IoT data streams — into an R/Python spatial workflow | Section 2 |
 
+:::{.callout-note}
+## This lab is optional extra credit; this module's homework is your Final Project Proposal
+
+From Module 8 on, the labs are **building blocks for your final project**.
+You're strongly encouraged to work through this one, since the modeling,
+R/Python bridge, and web-service patterns here are the pieces most projects
+end up reusing. **Submitting the lab deliverables is optional** and counts as
+**extra credit** toward your final grade (see the end of this document).
+
+This module's **required homework is the Final Project Proposal**, submitted
+through its own Canvas assignment (Homework 9). Section 4, Option 4 is a
+warm-up for it.
+:::
+
 ### The framing problem for tonight
 
 > **Where should the city add its next 10 low-cost air-quality sensors?**
@@ -56,6 +70,23 @@ the "integrate" stage, a *language bridge* so you're not locked into whichever
 library happens to be in R or Python, and *live web services* replacing the
 downloaded file as your data source.
 
+### Before you start — install the R packages
+
+Run this once in your R console before anything else (it only installs what's missing):
+
+```{r}
+#| label: install-packages
+#| eval: false
+
+pkgs <- c("tidymodels", "spatialsample", "ranger", "tmap", "sf", "dplyr",
+          "ggplot2", "httr2", "jsonlite", "reticulate")
+install.packages(setdiff(pkgs, rownames(installed.packages())))
+```
+
+The first install of `tidymodels` pulls in many dependencies and can take several minutes.
+Use a current `reticulate` (1.47 or newer; run `install.packages("reticulate")` to update): older versions can't convert
+pandas 3 DataFrames back to R.
+
 ### Before you start — confirm your R ↔ Python bridge
 
 Run this chunk first. If it errors, fix it now — don't wait for the Guided Lab.
@@ -64,32 +95,15 @@ Run this chunk first. If it errors, fix it now — don't wait for the Guided Lab
 #| label: env-check
 
 library(reticulate)
+
+# Point reticulate at Python you already trust (e.g. ArcGIS Pro's,
+# or a conda env where you've already installed pandas/scikit-learn)
+reticulate::use_python("C:/Users/mwebe/miniconda3/envs/ArcGIS_Clone/python.exe")
+
 py_config()
 # Expect: a Python path + version printed above.
-
-py_run_string("print('Python is connected')")
-# Expect: the printed confirmation string, with no error in between.
 ```
 
-**If it failed:** the most common cause is that `reticulate` auto-created a
-bare `r-reticulate` conda environment with no GIS/ML packages installed.
-Two fixes:
-
-```{r}
-#| eval: false
-
-# Fix 1 — let reticulate build a working environment for you
-reticulate::install_miniconda()
-
-# Fix 2 — point reticulate at Python you already trust (e.g. ArcGIS Pro's,
-# or a conda env where you've already installed pandas/scikit-learn)
-reticulate::use_python("path/to/arcgispro-py3/python.exe")
-```
-
-Re-run the `env-check` chunk above after either fix, and confirm it prints
-cleanly before moving on.
-
----
 
 # Section 1 — The Bridge: How `reticulate` Actually Works {#sec-bridge}
 
@@ -185,7 +199,7 @@ and Module 9's objective names all three:
 ## 2a — Why this notebook doesn't hit a real endpoint
 
 Real WFS/REST endpoints go down, change schemas, and rate-limit — bad
-properties for a notebook forty students run at once. Following the same
+properties for a notebook a bunch of us run at once. Following the same
 "synthetic-but-realistic" convention as Modules 3–8, this lab builds a
 synthetic REST-style sensor feed and a synthetic WFS-style covariate layer
 that look exactly like what the real services would hand back, so the *shape*
@@ -263,7 +277,8 @@ library(dplyr)
 
 set.seed(9)
 ncell <- 18
-xmin <- 500000; ymin <- 4937000; cellsize <- 400   # UTM 10N, arbitrary origin near Corvallis-scale extent
+# UTM 10N origin chosen so the grid covers the sensors' lon/lat box (-123.29 to -123.21, 44.56 to 44.62)
+xmin <- 476500; ymin <- 4934000; cellsize <- 400
 
 grid_geom <- st_make_grid(
   st_bbox(c(xmin = xmin, ymin = ymin,
@@ -514,8 +529,8 @@ predict_exposure <- function(sensors_sf, covariates_sf, n_new = 10) {
 # Section 4 — Extended Application {#sec-extended}
 
 *(~40–50 min — pick the option that matches what you want more practice on;
-everyone should look at Option 4 before Debrief since it's this module's
-project-status checkpoint.)*
+everyone should look at Option 4 before Debrief since it's a warm-up for
+this module's homework, the Final Project Proposal.)*
 
 ## Option 1 — Push the language bridge further
 
@@ -543,20 +558,7 @@ the shortlist in Step 4 change?
 
 ## Option 3 — Bring your own reticulate bridge
 
-If you have a Python function from your own work (an EPA tool, a StreamCat
-call, anything), `source_python()` it into this R session and use its output
-somewhere in the pipeline above. The point is proving the bridge works on
-code you didn't write for this course.
-
-## Option 4 — Project status report
-
-Pull up the final-project proposal you drafted in Module 8. In 3–5 sentences:
-
-> **Status:** _____ (What have you actually built since Module 8?)
-> **Blocker:** _____ (What's the thing most likely to slow you down next?)
-> **Does this module change your plan?** _____ (Would a spatial model, a
-> reticulate bridge, or a live web service pull change your project's scope?)
-
+If you have a Python function from your own work, `source_python()` it into this R session and use its output somewhere in the pipeline above. The point is proving the bridge works on code you didn't write for this course.
 ---
 
 # 🔍 Module 9 — Self-Check Questions
@@ -587,18 +589,21 @@ Work through these without looking at the chunks above, then verify.
 
 ---
 
-# ✅ Module 9 Homework — Deliverables
+# ⭐ Optional Extra Credit — Lab Deliverables
 
-Submit the following in Canvas before Module 10.
+You're encouraged to complete this lab, ideally on your own project's data,
+because each deliverable below is a building block you can reuse in your
+final project. **Submission is optional** and counts as **extra credit**
+toward your final grade.
 
-### Deliverable 1 — The Bridge, on Your Own Data (25 pts)
+### Extra Credit 1 — The Bridge, on Your Own Data
 
 Pass an object of your choosing from R to Python (or Python to R) using
 `reticulate`, do something with it in the second language that would have
 been awkward or impossible in the first, and bring it back. Submit: the
 chunk(s), one paragraph on why you picked that direction across the bridge.
 
-### Deliverable 2 — Naive vs. Spatial Cross-Validation, Your Data or Ours (25 pts)
+### Extra Credit 2 — Naive vs. Spatial Cross-Validation, Your Data or Ours
 
 Using either this lab's synthetic sensors or a spatial dataset of your own
 with at least 15–20 observations, reproduce Step 2's comparison: a naive
@@ -606,16 +611,16 @@ random CV RMSE and a spatial block CV RMSE for the same model. Submit: both
 numbers, the gap between them, and 2–3 sentences on whether that gap is big
 enough to change a real decision.
 
-### Deliverable 3 — Project Status Report (50 pts, graded)
+### Extra Credit 3 — One Lab Piece, Applied to Your Project
 
-Answer Section 4, Option 4's three prompts in full (not the 3–5 sentence
-version — this is the graded checkpoint). Note explicitly whether your final
-project will use a statistical/ML model, a reticulate bridge, or a live web
-service pull, even if the answer is "not yet, here's why."
+Take one technique from this lab (a model with spatial CV, a reticulate
+handoff, or a REST/WFS pull) and run it on data from your final project.
+Submit: the chunk(s) and 2–3 sentences on whether it will stay in your final
+workflow.
 
-Submit as this `.qmd` (or your own `.qmd`/`.ipynb`) rendered to HTML via
-Canvas. Tag your repo commit `module9-lab`. Questions → Ed Discussion
-`#module9`.
+**To submit (optional):** render this `.qmd` (or your own `.qmd`/`.ipynb`) to
+HTML and upload both with your Final Project Proposal (Homework 9) in Canvas.
+Tag your repo commit `module9-lab` if you're using GitHub.
 
 ---
 
