@@ -26,6 +26,11 @@ Open this file in Positron, click Render (or run chunks interactively with
 Cmd/Ctrl+Enter) — there's no kernel picker to think about. Positron runs the
 whole document as one R session with Python embedded inside it via
 reticulate.
+
+DATA: every input in this lab comes from a live, public, no-key web service
+(EPA, USGS, Census). Each pull writes a cached copy to data/module9_cache/ and
+falls back to that cache automatically if the service is down. Instructors:
+render once and commit data/module9_cache/ so the fallback exists for students.
 -->
 
 # What you'll accomplish this module
@@ -35,39 +40,37 @@ By the end of this notebook you'll be able to:
 | # | Learning outcome | Where |
 |---|---|---|
 | 1 | Design an integrated workflow: apply statistical modeling / machine learning libraries (`scikit-learn`, `tidymodels`) in R and Python to a real spatial prediction problem, end to end | Sections 3–4 |
-| 2 | Work across R and Python: transfer data and execute functions between R and Python within a single workflow using `reticulate` and Positron | Sections 1, 3, 5 |
-| 3 | Pull live spatial data: access and integrate spatial data from web services — WMS/WFS, REST APIs, and IoT data streams — into an R/Python spatial workflow | Section 2 |
+| 2 | Work across R and Python: transfer data and execute functions between R and Python within a single workflow using `reticulate` and Positron | Sections 1, 2, 3 |
+| 3 | Pull live spatial data: access and integrate spatial data from web services — WMS/WFS, REST APIs, and near-real-time monitoring feeds — into an R/Python spatial workflow | Section 2 |
 
 :::{.callout-note}
-## This lab is optional extra credit; this module's homework is your Final Project Proposal
+## This lab is optional extra credit
 
 From Module 8 on, the labs are **building blocks for your final project**.
 You're strongly encouraged to work through this one, since the modeling,
 R/Python bridge, and web-service patterns here are the pieces most projects
 end up reusing. **Submitting the lab deliverables is optional** and counts as
 **extra credit** toward your final grade (see the end of this document).
-
-This module's **required homework is the Final Project Proposal**, submitted
-through its own Canvas assignment (Homework 9). Section 4, Option 4 is a
-warm-up for it.
 :::
 
 ### The framing problem for tonight
 
-> **Where should the city add its next 10 low-cost air-quality sensors?**
-> The city has a sparse network of PM2.5 monitors — good enough for regulatory
-> compliance, not good enough to say whether the neighborhood next to the
-> rail yard is breathing worse air than the one next to the park. You have
-> live sensor readings from a REST API, land-cover / traffic / elevation
-> covariates from a WFS, and a budget for 10 more sensors. Build a model that
-> predicts PM2.5 everywhere from what a sensor *can* see, then rank the
-> unmonitored locations most likely to be under-measuring real exposure.
+> **Where should Washington, Oregon, and Idaho add their next 10 PM2.5 monitors?**
+> The regulatory PM2.5 network is built for compliance. It's dense around
+> Seattle, Portland, and Boise and thin almost everywhere else. In 2024 EPA
+> tightened the annual PM2.5 standard to 9.0 µg/m³, so the gaps now matter:
+> some unmonitored valleys could be over the new standard without anyone
+> knowing. You'll pull every monitor's current **annual PM2.5 design value**
+> straight from EPA's public ArcGIS feature service. Covariates come from
+> USGS and Census services: elevation, population density, and distance to
+> the nearest major road. You'll fit a model and rank the unmonitored
+> locations most likely to have high annual PM2.5.
 
-Nothing here is new spatial theory — you've done spatial joins (Module 4),
-raster/vector integration (Modules 5–6, 8), and mapping (Module 7). Module 9
-adds three new pieces to the pipeline: a *statistical model* standing in for
-the "integrate" stage, a *language bridge* so you're not locked into whichever
-library happens to be in R or Python, and *live web services* replacing the
+Nothing here is new spatial theory: you've done spatial joins (Module 4),
+raster/vector integration (Modules 5–6 and 8), and mapping (Module 7). Module 9
+adds three pieces to the pipeline. A *statistical model* becomes the
+"integrate" stage. A *language bridge* means you aren't stuck with whatever
+library R or Python happens to have. And *live web services* replace the
 downloaded file as your data source.
 
 ### Before you start — install the R packages
@@ -79,25 +82,41 @@ Run this once in your R console before anything else (it only installs what's mi
 #| eval: false
 
 pkgs <- c("tidymodels", "spatialsample", "ranger", "tmap", "sf", "dplyr",
-          "ggplot2", "httr2", "jsonlite", "reticulate")
+          "ggplot2", "httr2", "jsonlite", "leaflet", "reticulate")
 install.packages(setdiff(pkgs, rownames(installed.packages())))
 ```
 
 The first install of `tidymodels` pulls in many dependencies and can take several minutes.
 Use a current `reticulate` (1.47 or newer; run `install.packages("reticulate")` to update): older versions can't convert
-pandas 3 DataFrames back to R.
+pandas 3 DataFrames back to R. On the Python side you need `requests`, `pandas`,
+`numpy`, and `scikit-learn`, which are all already in the ArcGIS Pro Python environment.
 
 ### Before you start — confirm your R ↔ Python bridge
 
 Run this chunk first. If it errors, fix it now — don't wait for the Guided Lab.
+
+::: {.callout-important}
+## Students: point `use_python()` at your cloned ArcGIS Pro environment
+
+The chunk below contains the **instructor's** Python path
+(`C:/Users/mwebe/miniconda3/envs/ArcGIS_Clone/python.exe`), which won't exist on
+your computer. Before you run it, replace that path with the `python.exe` of
+**your own cloned ArcGIS Pro conda environment** (the clone you made in earlier
+modules, not ArcGIS Pro's default environment, which is read-only). Every
+chunk in this document, R or Python, uses whichever Python you set here.
+:::
 
 ```{r}
 #| label: env-check
 
 library(reticulate)
 
-# Point reticulate at Python you already trust (e.g. ArcGIS Pro's,
-# or a conda env where you've already installed pandas/scikit-learn)
+# !!! STUDENTS: CHANGE THIS PATH !!!
+# The path below is the instructor's machine. Replace it with the python.exe
+# of YOUR cloned ArcGIS Pro environment (or any conda env that already has
+# pandas, numpy, requests and scikit-learn). If you don't know it, run
+# `where python` in the ArcGIS Pro Python Command Prompt, or look in
+# C:/Users/<you>/AppData/Local/ESRI/conda/envs/<your-clone>/python.exe
 reticulate::use_python("C:/Users/mwebe/miniconda3/envs/ArcGIS_Clone/python.exe")
 
 py_config()
@@ -131,7 +150,7 @@ back and forth by name.
 | `list` (unnamed) | `list` | |
 | numeric vector | NumPy array / list | Length-1 vectors become Python scalars |
 | `NULL` | `None` | |
-| `sf` object | *(no automatic conversion)* | Convert geometry to WKT or GeoJSON text first — reticulate doesn't know GeoPandas' GeoDataFrame; you're the bridge for spatial types (see Section 3) |
+| `sf` object | *(no automatic conversion)* | Pass plain coordinates (lon/lat columns), WKT, or GeoJSON text instead. reticulate doesn't know GeoPandas' GeoDataFrame, so you're the bridge for spatial types (Section 2 passes lon/lat tables in both directions) |
 
 ## 1c — Live coding: pass an object each direction
 
@@ -141,32 +160,32 @@ back and forth by name.
 library(reticulate)
 
 # An R data.frame — nothing python-flavored about it yet
-sensor_counts_r <- data.frame(
-  land_use = c("industrial", "residential", "commercial", "park"),
-  n_sensors = c(2L, 5L, 3L, 1L)
+monitor_counts_r <- data.frame(
+  state = c("Washington", "Oregon", "Idaho"),
+  n_monitors = c(30L, 25L, 12L)   # illustrative counts; Section 2 pulls the real ones
 )
-sensor_counts_r
+monitor_counts_r
 ```
 
 ```{python}
 #| label: bridge-demo-py
 
-# `r.sensor_counts_r` reaches back into the R chunk above — the data.frame
+# `r.monitor_counts_r` reaches back into the R chunk above — the data.frame
 # arrives already converted to a pandas DataFrame, no export/import step.
 import pandas as pd
 
-sensor_counts_py = r.sensor_counts_r
-sensor_counts_py["sensors_per_10k_pop"] = sensor_counts_py["n_sensors"] * 1.7  # toy scaling
-sensor_counts_py
+monitor_counts_py = r.monitor_counts_r
+monitor_counts_py["share"] = monitor_counts_py["n_monitors"] / monitor_counts_py["n_monitors"].sum()
+monitor_counts_py
 ```
 
 ```{r}
 #| label: bridge-demo-r2
 
-# `py$sensor_counts_py` reaches forward into the Python chunk above —
+# `py$monitor_counts_py` reaches forward into the Python chunk above —
 # the pandas DataFrame arrives back as an R data.frame, edits and all.
-sensor_counts_back <- py$sensor_counts_py
-str(sensor_counts_back)
+monitor_counts_back <- py$monitor_counts_py
+str(monitor_counts_back)
 ```
 
 That round trip — R → Python → R, no files written, no kernel switched — is
@@ -187,181 +206,498 @@ same handoff applied to spatial data and a statistical model.
 
 *(Concept Input, remainder of the live-coding segment)*
 
-Three request/response patterns show up under the umbrella of "web services,"
-and Module 9's objective names all three:
+Module 9's objective names three request/response patterns. All three are
+live services in this lab:
 
-| Pattern | What you get back | Example this lab uses |
+| Pattern | What you get back | What this lab pulls |
 |---|---|---|
-| **WMS** (Web Map Service) | A rendered image — a picture, not features you can query or join | *(not used for modeling — mentioned for contrast; you'd reach for this only to display a reference basemap layer)* |
-| **WFS** (Web Feature Service) / generic **REST API** | Actual features — geometries + attributes you can filter, join, and feed to a model | Land-cover, traffic-distance, and elevation covariates |
-| **IoT / SensorThings-style stream** | Time-stamped observations from physical devices, usually JSON over REST | The PM2.5 sensor network readings |
+| **WMS** (Web Map Service) | A rendered image. You can look at it, but you can't query or join it | MRLC **NLCD 2021 land cover**, displayed for context only (Step 2e) |
+| **WFS** (Web Feature Service) | Features: geometries plus attributes, through a standard OGC request | USGS **Watershed Boundary Dataset** HU6 basins, which serve as airsheds for spatial CV (Step 2b) |
+| **REST API** (ArcGIS FeatureServer / MapServer / ImageServer) | Features, tables, or pixel values, filtered on the server with `where` and geometry parameters | EPA **PM2.5 annual design values** (2a); Census **TIGERweb** tracts and primary roads (2c); USGS **3DEP** elevation via `getSamples` (2d) |
+| **Near-real-time feed** (IoT / SensorThings-style) | Time-stamped observations from physical devices, refreshed hourly or faster | EPA **AirNow** hourly monitor layer (Extended Application, Option 2) |
 
-## 2a — Why this notebook doesn't hit a real endpoint
+## 2a — Live services, with a safety net
 
-Real WFS/REST endpoints go down, change schemas, and rate-limit — bad
-properties for a notebook a bunch of us run at once. Following the same
-"synthetic-but-realistic" convention as Modules 3–8, this lab builds a
-synthetic REST-style sensor feed and a synthetic WFS-style covariate layer
-that look exactly like what the real services would hand back, so the *shape*
-of the code — the part that matters — is identical to hitting the live
-services. Swap the base URL back in and the rest of the pipeline runs
-unchanged; that swap-in point is called out explicitly below.
+Real endpoints go down, change schemas, and rate-limit — bad properties for a
+notebook twenty people run at once. So every pull below does the same thing:
+**try the live service first, save a cached copy, and fall back to that copy
+if the service fails.** That's the production pattern too. Production
+pipelines never assume an upstream service is up.
+
+```{r}
+#| label: setup-params
+
+library(sf)
+library(dplyr)
+library(httr2)
+
+study_states <- c("Washington", "Oregon", "Idaho")
+study_fips   <- c("53", "41", "16")
+study_bbox   <- st_bbox(c(xmin = -124.9, ymin = 41.9, xmax = -111.0, ymax = 49.1),
+                        crs = st_crs(4326))
+
+# CONUS Albers Equal Area (meters). Module 3's WA State Plane (EPSG:2926)
+# doesn't cover a three-state study area, so we switch to a CRS that does.
+target_crs <- 5070
+grid_km    <- 50      # prediction grid cell size
+min_gap_km <- 25      # a cell this close to an existing monitor counts as "monitored"
+
+USE_CACHE  <- TRUE    # FALSE = live first, cache only as fallback; TRUE = read cache if present
+cache_dir  <- "data/module9_cache"
+dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create("output", showWarnings = FALSE)
+cache_gpkg <- file.path(cache_dir, "module9_cache.gpkg")
+
+# Generic "live pull, or fall back to cache" wrapper for sf layers
+pull_or_cache <- function(layer_name, pull_fn) {
+  cached <- file.exists(cache_gpkg) && layer_name %in% st_layers(cache_gpkg)$name
+  if (USE_CACHE && cached) return(st_read(cache_gpkg, layer = layer_name, quiet = TRUE))
+  out <- tryCatch(pull_fn(), error = function(e) {
+    message("Live pull for '", layer_name, "' failed: ", conditionMessage(e)); NULL
+  })
+  if (is.null(out) || nrow(out) == 0) {
+    if (cached) {
+      message("  -> using cached copy of '", layer_name, "'")
+      return(st_read(cache_gpkg, layer = layer_name, quiet = TRUE))
+    }
+    stop("No live data and no cached copy for '", layer_name, "'.")
+  }
+  st_write(out, cache_gpkg, layer = layer_name, delete_layer = TRUE, quiet = TRUE)
+  out
+}
+
+# A ~20-line R version of what arcgislayers::arc_select() does for you:
+# page through an ArcGIS REST /query endpoint, check exceededTransferLimit,
+# bind the pages into one sf object. Used in Steps 2b and 2c.
+arc_query_sf <- function(layer_url, ..., page_size = 2000, max_pages = 50) {
+  pages <- list()
+  for (i in seq_len(max_pages)) {
+    txt <- request(paste0(layer_url, "/query")) |>
+      req_url_query(..., outSR = 4326, f = "json",
+                    resultOffset = (i - 1) * page_size,
+                    resultRecordCount = page_size) |>
+      req_timeout(180) |>
+      req_retry(max_tries = 3) |>
+      req_perform() |>
+      resp_body_string()
+    if (grepl('^\\s*\\{\\s*"error"', txt)) stop("ArcGIS error: ", substr(txt, 1, 300))
+    pages[[i]] <- read_sf(txt, quiet = TRUE)              # GDAL's ESRIJSON driver
+    if (!grepl('"exceededTransferLimit"\\s*:\\s*true', txt)) break
+  }
+  bind_rows(pages)
+}
+```
+
+### Step 2a — The monitoring network: EPA PM2.5 design values (ArcGIS REST, Python)
+
+EPA publishes design values for every criteria pollutant as a public ArcGIS
+feature service. A **design value** is the statistic compared against the
+standard; for annual PM2.5 it's a 3-year average of annual means. Layer `4`
+is *PM2.5 Annual*. You query it the way ArcGIS Pro does behind the scenes:
+an HTTP `GET` to `/query` with a `where` clause.
 
 ```{python}
-#| label: synth-sensors
+#| label: pull-design-values
 
-# [Python] Step 0a — a synthetic REST/IoT-style PM2.5 sensor feed
-#
-# A real call would look like:
-#   import requests
-#   resp = requests.get(
-#       "https://api.citysensors.example.gov/v1/pm25/current",
-#       params={"bbox": "-123.30,44.55,-123.20,44.63"},
-#   )
-#   sensors_json = resp.json()
-#
-# We build the equivalent payload locally instead — same JSON shape
-# (a list of records with lon/lat/value/timestamp) a real IoT REST API
-# would return.
+# [Python] Step 2a — query EPA's Air Quality Design Values FeatureServer
+import os
+import time
+import json
+import requests
 import numpy as np
 import pandas as pd
 
-rng = np.random.default_rng(9)
-n_sensors = 22
+DV_LAYER = ("https://services.arcgis.com/cJ9YHowT8TU7DUyn/ArcGIS/rest/services/"
+            "Air_Quality_Design_Values_for_Criteria_Pollutants/FeatureServer/4")
 
-lon = rng.uniform(-123.29, -123.21, n_sensors)
-lat = rng.uniform(44.56, 44.62, n_sensors)
+def arcgis_query(layer_url, where="1=1", out_fields="*", page_size=1000, **extra):
+    """Page through an ArcGIS REST /query endpoint and return attribute dicts.
 
-# PM2.5 (µg/m3): higher near the low-lon/low-lat corner (stand-in for an
-# industrial/traffic corridor), lower toward the high-lon/high-lat corner
-# (stand-in for a park/residential edge) — a believable exposure gradient.
-base = 14 - 60 * (lon + 123.29) - 40 * (lat - 44.56)
-pm25 = np.clip(base + rng.normal(0, 1.5, n_sensors), 3, 30)
+    This is what ArcGIS Pro, the ArcGIS API for Python, and R's arcgislayers
+    all do under the hood: request a page, check exceededTransferLimit,
+    request the next page."""
+    rows, offset = [], 0
+    while True:
+        params = {"where": where, "outFields": out_fields, "returnGeometry": "false",
+                  "resultOffset": offset, "resultRecordCount": page_size, "f": "json", **extra}
+        resp = requests.get(f"{layer_url}/query", params=params, timeout=60)
+        resp.raise_for_status()
+        payload = resp.json()
+        if "error" in payload:        # ArcGIS reports errors inside an HTTP 200 response
+            raise RuntimeError(payload["error"])
+        batch = payload.get("features", [])
+        rows.extend(f["attributes"] for f in batch)
+        if not batch or not payload.get("exceededTransferLimit"):
+            break
+        offset += len(batch)
+    return rows
 
-sensors_json = [
-    {
-        "sensor_id": f"S-{i:03d}",
-        "lon": round(float(lon[i]), 5),
-        "lat": round(float(lat[i]), 5),
-        "pm25": round(float(pm25[i]), 1),
-        "timestamp": "2026-07-15T18:00:00Z",
-    }
-    for i in range(n_sensors)
-]
+USE_CACHE = r.USE_CACHE
+dv_cache = os.path.join(r.cache_dir, "pm25_design_values.csv")
+where = "state_name IN ({})".format(",".join(f"'{s}'" for s in r.study_states))
+fields = ("AQSID,local_site_name,state_name,county_name,latitude,longitude,"
+          "dv_year,design_value,dv_validity_ind,edt_id")
 
-sensors_df = pd.DataFrame(sensors_json)
-print(f"Pulled {len(sensors_df)} sensor readings (synthetic REST/IoT payload)")
-sensors_df.head()
+try:
+    if USE_CACHE and os.path.exists(dv_cache):
+        raise RuntimeError("USE_CACHE is TRUE")
+    dv_raw = pd.DataFrame(arcgis_query(DV_LAYER, where=where, out_fields=fields))
+    dv_raw.to_csv(dv_cache, index=False)
+    source = "live EPA FeatureServer"
+except Exception as e:
+    if USE_CACHE and os.path.exists(dv_cache):
+        print("USE_CACHE = TRUE: reading the saved copy instead of calling the live service.")
+    else:
+        print("Live pull failed (", e, "); falling back to the saved copy.")
+    dv_raw = pd.read_csv(dv_cache)
+    source = "cached copy"
+
+print(f"{len(dv_raw)} design-value rows from {source}")
+dv_raw.head()
 ```
+
+The raw table can hold more than one row per site: several design-value
+periods, and sometimes a separate row with exceptional events (wildfire
+smoke, for example) excluded. Before modeling, reduce it to **one row per
+monitor for the latest period**:
+
+```{python}
+#| label: clean-design-values
+
+dv = dv_raw.copy()
+dv["dv_year"] = pd.to_datetime(dv["dv_year"], unit="ms").dt.year   # ArcGIS dates are epoch milliseconds
+latest = int(dv["dv_year"].max())
+dv = dv[(dv["dv_year"] == latest) & dv["design_value"].notna()]
+
+valid = dv["dv_validity_ind"].astype(str).str.upper().str.startswith("Y")
+if valid.any():
+    dv = dv[valid]
+else:
+    print("Note: no rows flagged valid; check dv_validity_ind values:",
+          dv_raw["dv_validity_ind"].unique())
+
+print("Exceptional-event variants present:", dict(dv["edt_id"].value_counts()))
+dv = dv.sort_values("edt_id").drop_duplicates("AQSID")    # one consistent row per site
+
+monitors_df = (dv.rename(columns={"longitude": "lon", "latitude": "lat",
+                                  "design_value": "pm25_dv"})
+                 [["AQSID", "local_site_name", "state_name", "lon", "lat", "pm25_dv"]]
+                 .reset_index(drop=True))
+
+print(f"{len(monitors_df)} monitors with a valid {latest - 2}–{latest} annual PM2.5 design value")
+print(f"{(monitors_df.pm25_dv > 9.0).sum()} are above the 2024 NAAQS of 9.0 µg/m³")
+monitors_df.describe()
+```
+
+### Step 2b — Airsheds from a WFS: USGS Watershed Boundary Dataset (R)
+
+Air pollution pools in basins. Think of Willamette Valley inversions or
+woodsmoke in the Boise valley. Hydrologic basins (HU6) are a decent stand-in
+for airsheds, and Step 2 of the lab uses them to build honest
+cross-validation folds. USGS serves the WBD as an OGC **WFS**.
+
+GDAL, and therefore `sf` and GeoPandas, speaks WFS natively, but only part of
+that works against this server:
+
+| Request | Through GDAL (`st_layers()` / `st_read()`) | Result |
+|---|---|---|
+| `GetCapabilities` (list the layers) | `st_layers("WFS:...")` | Works |
+| `GetFeature`, no filter | `st_read("WFS:...", layer = ...)` | Works, but downloads every HU6 basin in the country, as curved `MultiSurface` geometries that break `st_intersects()` and `st_cast()` |
+| `GetFeature` with a bbox | `st_read(..., wkt_filter = ...)` or GeoPandas `bbox=` | **HTTP 403**, whichever WFS version you force |
+
+GDAL builds its own filtered `GetFeature` request, and this ArcGIS-hosted
+WFS rejects it. A hand-written WFS 2.0 request with the same bbox works. So
+the code below uses GDAL for `GetCapabilities` and writes the `GetFeature`
+URL itself. That's a lesson in its own right: standards compliance varies by
+server, and sometimes you have to drop down a level to the raw request.
 
 ```{r}
-#| label: synth-covariates
+#| label: pull-basins-wfs
 
-# [R] Step 0b — a synthetic WFS-style covariate layer
-#
-# A real call would look like:
-#   library(httr2)
-#   resp <- request("https://gis.city.example.gov/geoserver/wfs") |>
-#     req_url_query(service = "WFS", version = "2.0.0", request = "GetFeature",
-#                   typeNames = "city:landcover_grid", outputFormat = "application/json") |>
-#     req_perform()
-#   covariates_sf <- sf::read_sf(resp_body_string(resp))
-#
-# We build the equivalent sf object locally — a regular grid of cells with
-# percent impervious surface, distance to the nearest major road (m), and
-# elevation (m) — the same three columns a real land-cover/traffic/DEM-derived
-# WFS layer would carry, in the same projected CRS the course has used since
-# Module 3 (EPSG:32610, UTM Zone 10N).
-library(sf)
-library(dplyr)
+# [R] Step 2b — HU6 basins from the USGS WBD WFS (REST fallback if WFS is down)
+wbd_wfs  <- "https://hydro-wfs.nationalmap.gov/arcgis/services/wbd/MapServer/WFSServer"
+wbd_rest <- "https://hydro.nationalmap.gov/arcgis/rest/services/wbd/MapServer/3"   # 6-digit HU
 
-set.seed(9)
-ncell <- 18
-# UTM 10N origin chosen so the grid covers the sensors' lon/lat box (-123.29 to -123.21, 44.56 to 44.62)
-xmin <- 476500; ymin <- 4934000; cellsize <- 400
+basins <- pull_or_cache("wbd_hu6", function() {
+  out <- tryCatch({
+    # GetCapabilities through GDAL: this part works
+    lyrs <- st_layers(paste0("WFS:", wbd_wfs))$name
+    message("WFS layers on offer: ", paste(lyrs, collapse = ", "))
+    hu6  <- grep("Basin", lyrs, value = TRUE, ignore.case = TRUE)[1]   # HU6 = "Basin"
+    if (is.na(hu6)) stop("couldn't find the HU6 (Basin) layer in GetCapabilities")
 
-grid_geom <- st_make_grid(
-  st_bbox(c(xmin = xmin, ymin = ymin,
-            xmax = xmin + ncell * cellsize, ymax = ymin + ncell * cellsize)),
-  cellsize = cellsize, what = "polygons"
-)
+    # GetFeature by hand: GDAL's own bbox request gets HTTP 403 from this server.
+    # WFS 2.0 + EPSG:4326 means lat/lon axis order: ymin,xmin,ymax,xmax
+    bbox_latlon <- paste(c(study_bbox[["ymin"]], study_bbox[["xmin"]],
+                           study_bbox[["ymax"]], study_bbox[["xmax"]]), collapse = ",")
+    gml <- tempfile(fileext = ".gml")
+    request(wbd_wfs) |>
+      req_url_query(service = "WFS", version = "2.0.0", request = "GetFeature",
+                    typeNames = hu6, count = 500,
+                    bbox = paste0(bbox_latlon, ",urn:ogc:def:crs:EPSG::4326")) |>
+      req_timeout(180) |>
+      req_retry(max_tries = 3) |>
+      req_perform(path = gml)
 
-covariates_sf <- st_sf(
-  cell_id = seq_along(grid_geom),
-  geometry = grid_geom,
-  crs = 32610
-)
+    # type = 6 forces MULTIPOLYGON, linearizing any curved MultiSurface geometry
+    st_read(gml, type = 6, quiet = TRUE) |> st_make_valid()
+  }, error = function(e) {
+    message("WFS failed (", conditionMessage(e), "); trying the WBD REST endpoint")
+    arc_query_sf(wbd_rest, where = "1=1", outFields = "huc6,name",
+                 geometry = paste(study_bbox, collapse = ","),
+                 geometryType = "esriGeometryEnvelope", inSR = 4326,
+                 spatialRel = "esriSpatialRelIntersects", maxAllowableOffset = 0.01)
+  })
+  # WFS and REST spell field names differently (HUC6 vs huc6): lowercase the
+  # attribute names, but leave the geometry column's name alone
+  geom_col <- attr(out, "sf_column")
+  nm <- names(out)
+  nm[nm != geom_col] <- tolower(nm[nm != geom_col])
+  names(out) <- nm
+  select(out, any_of(c("huc6", "name")))
+})
 
-centroids <- st_coordinates(st_centroid(covariates_sf))
-# Same gradient logic as the Python sensor readings above, so the covariates
-# actually explain the exposure surface rather than being unrelated noise.
-frac_x <- (centroids[, "X"] - xmin) / (ncell * cellsize)
-frac_y <- (centroids[, "Y"] - ymin) / (ncell * cellsize)
-
-covariates_sf <- covariates_sf |>
-  mutate(
-    pct_impervious = pmax(0, pmin(100, 85 - 70 * frac_x - 50 * frac_y + rnorm(ncell^2, 0, 6))),
-    dist_major_road_m = pmax(20, 900 * frac_x + 600 * frac_y + rnorm(ncell^2, 0, 80)),
-    elevation_m = 60 + 40 * frac_y + rnorm(ncell^2, 0, 5)
-  )
-
-st_write(covariates_sf, "output/covariates.gpkg", delete_dsn = TRUE, quiet = TRUE)
-cat("Wrote", nrow(covariates_sf), "covariate grid cells to output/covariates.gpkg\n")
-head(st_drop_geometry(covariates_sf))
+cat(nrow(basins), "HU6 basins intersect the study area\n")
 ```
 
-## 2b — SensorThings and the IoT piece of the objective
+The REST fallback isn't just a backup. The same USGS basins are also
+published as an ArcGIS REST layer, which filters on the server with no
+axis-order or geometry-type surprises. When a provider offers both, the REST
+route is usually the simpler one. WFS is still worth knowing, because many
+agencies publish *only* OGC services. Its successor, OGC API – Features,
+uses plain URLs and GeoJSON and avoids most of these quirks.
 
-The sensor feed above is a snapshot — one reading per device. A real IoT
-platform (OGC's **SensorThings API** is the standard named in this module's
-required reading) exposes each device as a `Thing` with a time series of
-`Observations`, so you can ask for "the last 24 hours of PM2.5 from sensor
-S-014" rather than just its current value. That's the same REST pattern with
-one more nesting level — worth knowing the vocabulary (`Thing`,
-`Datastream`, `Observation`) even though this lab works from single readings
-to keep the modeling steps focused.
+### Step 2c — Population density and roads from Census TIGERweb (ArcGIS REST, R)
+
+TIGERweb is the Census Bureau's ArcGIS Server. Its tract layer carries the
+2020 census population (`POP100`) and land area (`AREALAND`), which gives
+you population density. Its *Primary Roads* layer gives you interstates and
+limited-access highways, which gives you distance-to-road. Both go through
+`arc_query_sf()`, the small paging helper defined in the setup chunk above.
+
+```{r}
+#| label: pull-tracts-roads
+
+tiger <- "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb"
+
+tracts <- pull_or_cache("tiger_tracts", function() {
+  arc_query_sf(paste0(tiger, "/Tracts_Blocks/MapServer/10"),
+               where = sprintf("STATE IN (%s)", paste0("'", study_fips, "'", collapse = ",")),
+               outFields = "GEOID,STATE,POP100,AREALAND",
+               maxAllowableOffset = 0.005,        # generalize on the server: ~500 m
+               page_size = 4000)
+})
+stopifnot("POP100" %in% names(tracts))            # schema check — services do change
+
+roads <- pull_or_cache("tiger_primary_roads", function() {
+  arc_query_sf(paste0(tiger, "/Transportation_LargeScale/MapServer/0"),
+               where = "1=1", outFields = "MTFCC",
+               geometry = paste(study_bbox, collapse = ","),
+               geometryType = "esriGeometryEnvelope", inSR = 4326,
+               spatialRel = "esriSpatialRelIntersects",
+               maxAllowableOffset = 0.002)
+})
+
+cat(nrow(tracts), "census tracts;", nrow(roads), "primary-road segments\n")
+```
+
+Now build the **prediction grid**: 50 km cells covering the three states,
+each with a population density (from the tract under its center) and a
+distance to the nearest primary road.
+
+```{r}
+#| label: build-grid
+
+tracts_p <- tracts |>
+  st_transform(target_crs) |>
+  mutate(pop_density = as.numeric(POP100) / pmax(as.numeric(AREALAND) / 1e6, 0.01)) |>  # people / km²
+  select(pop_density)
+
+roads_p <- st_transform(roads, target_crs)
+
+grid_geom <- st_make_grid(tracts_p, cellsize = grid_km * 1000, what = "polygons")
+grid      <- st_sf(cell_id = seq_along(grid_geom), geometry = grid_geom)
+
+grid_ctr <- grid |>
+  st_centroid() |>
+  st_join(tracts_p, join = st_intersects, left = FALSE) |>   # drops cells outside WA/OR/ID
+  distinct(cell_id, .keep_all = TRUE)
+
+nearest <- st_nearest_feature(grid_ctr, roads_p)
+grid_ctr$dist_road_km <- as.numeric(st_distance(grid_ctr, roads_p[nearest, ], by_element = TRUE)) / 1000
+
+grid <- grid |> filter(cell_id %in% grid_ctr$cell_id)
+
+# Hand the cell centers to Python as plain lon/lat — sf doesn't cross the bridge
+grid_ll    <- st_coordinates(st_transform(grid_ctr, 4326))
+grid_pts_r <- data.frame(cell_id = grid_ctr$cell_id, lon = grid_ll[, 1], lat = grid_ll[, 2])
+
+cat(nrow(grid), "grid cells inside the study area\n")
+```
+
+### Step 2d — Elevation from the 3DEP ImageServer (ArcGIS REST, Python)
+
+An ImageServer serves pixels, not features. Its `getSamples` operation
+returns the raster value at a set of points you send it, so you never
+download a DEM. This step samples the monitors from Step 2a *and* the grid
+cells that R just built, and the grid arrives here as `r.grid_pts_r`.
+
+```{python}
+#| label: pull-elevation
+
+# [Python] Step 2d — sample USGS 3DEP elevation at monitors + grid cell centers
+ELEV = ("https://elevation.nationalmap.gov/arcgis/rest/services/"
+        "3DEPElevation/ImageServer/getSamples")
+
+def sample_3dep(lon, lat, chunk=25, tries=5):
+    """Return elevation (m) at each lon/lat via 3DEP getSamples, in input order."""
+    lon, lat = np.asarray(lon, float), np.asarray(lat, float)
+    out = np.full(len(lon), np.nan)
+    for start in range(0, len(lon), chunk):
+        pts = [[x, y] for x, y in zip(lon[start:start + chunk], lat[start:start + chunk])]
+        for attempt in range(tries):                  # the service intermittently returns 502/504
+            resp = requests.post(ELEV, data={
+                "geometry": json.dumps({"points": pts, "spatialReference": {"wkid": 4326}}),
+                "geometryType": "esriGeometryMultipoint",
+                "returnFirstValueOnly": "true",
+                "f": "json"}, timeout=120)
+            if resp.status_code < 500:
+                break
+            time.sleep(2 ** attempt)
+        resp.raise_for_status()
+        samples = resp.json().get("samples", [])
+        ids = [s["locationId"] for s in samples]
+        base = 0 if 0 in ids else 1                   # locationId is 0- or 1-based depending on server
+        for s in samples:
+            try:
+                out[start + s["locationId"] - base] = float(s["value"])
+            except (ValueError, TypeError, IndexError):
+                pass                                  # "NoData" stays NaN
+    return out
+
+grid_pts = r.grid_pts_r
+elev_cache = os.path.join(r.cache_dir, f"elevation_{int(r.grid_km)}km.csv")
+try:
+    if USE_CACHE and os.path.exists(elev_cache):
+        raise RuntimeError("USE_CACHE is TRUE")
+    monitors_df["elevation_m"] = sample_3dep(monitors_df.lon, monitors_df.lat)
+    grid_pts["elevation_m"]    = sample_3dep(grid_pts.lon, grid_pts.lat)
+    pd.concat([
+        monitors_df.assign(kind="monitor", key=monitors_df.AQSID.astype(str))[["kind", "key", "elevation_m"]],
+        grid_pts.assign(kind="grid", key=grid_pts.cell_id.astype(int).astype(str))[["kind", "key", "elevation_m"]],
+    ]).to_csv(elev_cache, index=False)
+except Exception as e:
+    if USE_CACHE and os.path.exists(elev_cache):
+        print("USE_CACHE = TRUE: reading saved elevations instead of calling the live service.")
+    else:
+        print("Live elevation pull failed (", e, "); falling back to the saved copy.")
+    cache = pd.read_csv(elev_cache, dtype={"key": str})
+    look = dict(zip(cache.kind + ":" + cache.key, cache.elevation_m))
+    monitors_df["elevation_m"] = pd.to_numeric(
+        [look.get(f"monitor:{k}") for k in monitors_df.AQSID.astype(str)], errors="coerce")
+    grid_pts["elevation_m"] = pd.to_numeric(
+        [look.get(f"grid:{int(k)}") for k in grid_pts.cell_id], errors="coerce")
+
+print("Monitors missing elevation:", int(monitors_df.elevation_m.isna().sum()))
+print("Grid cells missing elevation:", int(grid_pts.elevation_m.isna().sum()))
+```
+
+### Step 2e — The WMS contrast: NLCD land cover as a picture (R)
+
+You can **see** land cover through MRLC's WMS. Try getting a number out of
+it. Every request returns PNG tiles, which are pixels colored for display.
+To *model* with NLCD you'd need a WCS or ImageServer, a Cloud-Optimized
+GeoTIFF (Module 10), or a download. That's the WMS trap from tonight's slides.
+
+```{r}
+#| label: wms-view
+
+library(leaflet)
+
+mon <- py$monitors_df
+
+leaflet() |>
+  addProviderTiles("CartoDB.Positron") |>
+  addWMSTiles(
+    "https://www.mrlc.gov/geoserver/mrlc_display/NLCD_2021_Land_Cover_L48/wms",
+    layers  = "NLCD_2021_Land_Cover_L48",
+    options = WMSTileOptions(format = "image/png", transparent = TRUE, opacity = 0.55),
+    attribution = "MRLC NLCD 2021 (WMS)"
+  ) |>
+  addCircleMarkers(data = mon, lng = ~lon, lat = ~lat, radius = 5,
+                   color = "#4b2e83", fillOpacity = 0.9, stroke = FALSE,
+                   label = ~sprintf("%s: %.1f µg/m³", local_site_name, pm25_dv)) |>
+  fitBounds(-124.9, 41.9, -111.0, 49.1)
+# If the land-cover tiles come back blank, MRLC has renamed the layer: open
+# .../wms?service=WMS&request=GetCapabilities and copy the layer's <Name>.
+```
+
+## 2f — SensorThings and the IoT piece of the objective
+
+Design values are a slow-moving, 3-year statistic. That's exactly why they
+work as a modeling target. A real-time platform answers a different
+question, such as *"what is PM2.5 at this monitor right now, and over the
+last 24 hours?"* OGC's **SensorThings API** (named in this module's required
+reading) standardizes that. Each device is a `Thing` with `Datastreams` of
+time-stamped `Observations`. EPA's **AirNow** hourly feature layer is the
+same idea published as an ArcGIS layer, and Extended Application Option 2
+uses it. Learn the vocabulary (`Thing`, `Datastream`, `Observation`). The
+modeling in this lab sticks to the stable annual statistic on purpose.
 
 ---
 
-# Section 3 — Guided Lab: Build the Air-Quality Exposure Model {#sec-lab}
+# Section 3 — Guided Lab: Build the PM2.5 Gap Model {#sec-lab}
 
 *(Guided Lab, ~50–60 min)*
 
-**Goal:** a `predict_exposure()` pipeline that takes the sensor readings and
-covariate grid from Section 2, fits a spatial model, and ranks the
-unmonitored cells most likely to be under-measured — the shortlist for the
-city's next 10 sensors.
+**Goal:** a `predict_exposure()` pipeline that takes the monitors and
+covariates from Section 2, fits a spatial model, and ranks the unmonitored
+grid cells with the highest predicted annual PM2.5. That ranking is the
+shortlist for the next 10 monitors.
 
-## Step 1 — Spatial join: attach covariates to each sensor
+## Step 1 — Spatial join: attach covariates to each monitor
 
 ```{r}
 #| label: lab-step1
 
-# [R] Step 1 — join sensor points to the covariate cell they fall in
-library(sf)
-library(dplyr)
+# [R] Step 1 — monitors (from Python) + tract density + road distance + basin
+monitors_sf <- st_as_sf(py$monitors_df, coords = c("lon", "lat"), crs = 4326) |>
+  st_transform(target_crs) |>                        # match the covariates' CRS before joining
+  st_join(tracts_p, join = st_intersects) |>
+  distinct(AQSID, .keep_all = TRUE) |>
+  st_join(st_transform(basins, target_crs) |> select(huc6), join = st_intersects) |>
+  distinct(AQSID, .keep_all = TRUE)
 
-sensors_sf <- st_as_sf(
-  py$sensors_df,                     # <- the pandas DataFrame from Section 2, back across the bridge
-  coords = c("lon", "lat"), crs = 4326
-) |>
-  st_transform(32610)                # match the covariate grid's CRS before joining — Module 3's rule
+nearest_m <- st_nearest_feature(monitors_sf, roads_p)
+monitors_sf$dist_road_km <- as.numeric(
+  st_distance(monitors_sf, roads_p[nearest_m, ], by_element = TRUE)) / 1000
 
-sensors_joined <- st_join(sensors_sf, covariates_sf, join = st_within)
+monitors_sf <- monitors_sf |>
+  mutate(log_pop_density = log10(pop_density + 1),
+         huc6 = coalesce(as.character(huc6), "unknown"))
 
-cat("Sensors joined to covariates:", sum(!is.na(sensors_joined$cell_id)),
-    "of", nrow(sensors_joined), "\n")
-head(st_drop_geometry(sensors_joined))
+cat("Monitors with a complete covariate set:",
+    sum(complete.cases(st_drop_geometry(monitors_sf)[, c("pm25_dv", "log_pop_density",
+                                                          "dist_road_km", "elevation_m")])),
+    "of", nrow(monitors_sf), "\n")
+head(st_drop_geometry(monitors_sf))
+
+# Save the modeling table (complete rows, no basin column) for the
+# slide demos: Concept slides "Preparing Data" → "reticulate in Action" → "Fit → Predict"
+monitors_sf |>
+  select(AQSID, local_site_name, pm25_dv, log_pop_density, dist_road_km, elevation_m) |>
+  filter(!is.na(pm25_dv), !is.na(log_pop_density), !is.na(dist_road_km), !is.na(elevation_m)) |>
+  st_write(file.path(cache_dir, "monitors_covariates.gpkg"), delete_dsn = TRUE, quiet = TRUE)
 ```
 
 ## Step 2 — The naive-split trap (why this isn't just `train_test_split()`)
 
-Before fitting anything: your 22 sensors aren't independent observations.
-Two sensors four blocks apart see correlated air — Tobler's First Law again,
-same as the concept slide from tonight's warm-up. Split them randomly into
-train/test and the test sensors likely sit right next to a training sensor,
-so the model "passes" by memorizing its neighbor rather than learning the
-land-cover/traffic/elevation relationship. Watch it happen:
+Before fitting anything, notice that the monitors aren't independent
+observations. Three Portland-area monitors breathe the same air (Tobler's
+First Law again). Split them randomly and a test monitor usually has a
+training neighbor a few kilometers away. The model then "passes" by
+memorizing the neighbor instead of learning how population, roads, and
+terrain relate to PM2.5. Watch it happen:
 
 ```{r}
 #| label: lab-step2-naive
@@ -369,10 +705,12 @@ land-cover/traffic/elevation relationship. Watch it happen:
 # [R] Step 2a — naive random cross-validation (the wrong way, done on purpose)
 library(tidymodels)
 
-model_data <- sensors_joined |>
+monitors_cv <- monitors_sf |>
+  filter(!is.na(pm25_dv), !is.na(log_pop_density), !is.na(dist_road_km), !is.na(elevation_m))
+
+model_data <- monitors_cv |>
   st_drop_geometry() |>
-  filter(!is.na(cell_id)) |>
-  select(pm25, pct_impervious, dist_major_road_m, elevation_m)
+  select(pm25_dv, log_pop_density, dist_road_km, elevation_m)
 
 set.seed(9)
 naive_folds <- vfold_cv(model_data, v = 5)
@@ -383,103 +721,123 @@ rf_spec <- rand_forest(trees = 500) |>
 
 rf_wf <- workflow() |>
   add_model(rf_spec) |>
-  add_formula(pm25 ~ pct_impervious + dist_major_road_m + elevation_m)
+  add_formula(pm25_dv ~ log_pop_density + dist_road_km + elevation_m)
 
 naive_results <- fit_resamples(rf_wf, resamples = naive_folds,
-                                metrics = metric_set(rmse))
+                               metrics = metric_set(rmse))
 naive_rmse <- collect_metrics(naive_results) |> filter(.metric == "rmse") |> pull(mean)
-cat("Naive random 5-fold CV RMSE:", round(naive_rmse, 2), "µg/m3\n")
+cat("Naive random 5-fold CV RMSE:", round(naive_rmse, 2), "µg/m³\n")
 ```
 
 ```{r}
 #| label: lab-step2-spatial
 
 # [R] Step 2b — spatial block cross-validation (the fix)
-# install.packages("spatialsample") if you don't have it yet
 library(spatialsample)
 
-sensors_for_cv <- sensors_joined |> filter(!is.na(cell_id))
-
-spatial_folds <- spatial_block_cv(sensors_for_cv, v = 5)
+set.seed(9)
+spatial_folds <- spatial_block_cv(monitors_cv, v = 5)
 
 spatial_results <- fit_resamples(rf_wf, resamples = spatial_folds,
-                                  metrics = metric_set(rmse))
+                                 metrics = metric_set(rmse))
 spatial_rmse <- collect_metrics(spatial_results) |> filter(.metric == "rmse") |> pull(mean)
-cat("Spatial block 5-fold CV RMSE:", round(spatial_rmse, 2), "µg/m3\n")
+cat("Spatial block 5-fold CV RMSE:", round(spatial_rmse, 2), "µg/m³\n")
 
 cat("\nGap:", round(spatial_rmse - naive_rmse, 2),
-    "µg/m3 higher error once nearby sensors can't leak into each other's fold.\n")
-cat("That gap is the honest number — it's what you'd actually see predicting\n")
-cat("a genuinely unmonitored block, which is the whole point of this exercise.\n")
+    "µg/m³ higher error once nearby monitors can't leak into each other's fold.\n")
+cat("That gap is the honest number: it's what you'd actually see predicting\n")
+cat("an unmonitored valley, which is the whole point of this exercise.\n")
 ```
 
-With only 22 synthetic sensors the exact numbers will bounce around by seed —
-the required `tidymodels` reading (geocompx's spatial-ML post) shows the same
-naive-vs-spatial-block gap on a larger real dataset (0.94 → 1.41 RMSE) if you
-want a more stable reference point. The direction of the gap — spatial CV
-always reports the more honest, usually worse, number — is what to take away,
-not the exact magnitude.
+With a few dozen real monitors the exact numbers will move with the seed,
+and with whatever EPA published most recently. The required `tidymodels`
+reading (geocompx's spatial-ML post) shows the same naive-vs-spatial gap on
+a larger dataset (0.94 → 1.41 RMSE) if you want a more stable reference.
+Take away the *direction* of the gap, not its size. Spatial CV reports the
+more honest number, and it's usually worse.
 
 ## Step 3 — Fit the model both ways: tidymodels *and* scikit-learn
 
 This is where the language bridge earns its keep. Fit the same random forest
-in R (`tidymodels`/`ranger`) and in Python (`scikit-learn`), using the
-spatial folds from Step 2b so both are judged fairly.
+in R (`tidymodels`/`ranger`) and in Python (`scikit-learn`). Python gets a
+second kind of spatial CV: **grouping by HU6 basin**, the WFS layer from
+Step 2b. A whole airshed is held out at a time.
 
 ```{r}
 #| label: lab-step3-r
 
-# [R] Step 3a — final tidymodels fit on the full spatial-CV-validated spec
+# [R] Step 3a — final tidymodels fit on all monitors
 final_rf_fit <- rf_wf |> fit(data = model_data)
 final_rf_fit
+
+# Hand Python the same rows, plus the basin ID to group on
+model_data_py <- monitors_cv |>
+  st_drop_geometry() |>
+  select(pm25_dv, log_pop_density, dist_road_km, elevation_m, huc6)
 ```
 
 ```{python}
 #| label: lab-step3-py
 
-# [Python] Step 3b — the scikit-learn equivalent, using data handed across
-# the bridge from the R chunk above (r.model_data)
+# [Python] Step 3b — scikit-learn, with the data handed across the bridge
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import GroupKFold, cross_val_score
+from sklearn.model_selection import KFold, GroupKFold, cross_val_score
 
-model_data_py = r.model_data
-X = model_data_py[["pct_impervious", "dist_major_road_m", "elevation_m"]]
-y = model_data_py["pm25"]
+md = r.model_data_py
+feats = ["log_pop_density", "dist_road_km", "elevation_m"]
+X, y, groups = md[feats], md["pm25_dv"], md["huc6"]
 
 rf_sklearn = RandomForestRegressor(n_estimators=500, random_state=9)
-rf_sklearn.fit(X, y)
 
-# GroupKFold with each sensor's covariate cell_id as the group is scikit-learn's
-# closest built-in analogue to spatial_block_cv() above — folds never split
-# a spatial group across train and test, the same guarantee spatialsample gives.
-groups = r.sensors_for_cv["cell_id"] if hasattr(r, "sensors_for_cv") else None
-print("scikit-learn RandomForestRegressor trained on", len(X), "sensors")
-print("Feature importances:", dict(zip(X.columns, rf_sklearn.feature_importances_.round(3))))
+naive_cv = -cross_val_score(rf_sklearn, X, y, scoring="neg_root_mean_squared_error",
+                            cv=KFold(n_splits=5, shuffle=True, random_state=9)).mean()
+
+k = min(5, groups.nunique())                      # can't have more folds than basins
+basin_cv = -cross_val_score(rf_sklearn, X, y, scoring="neg_root_mean_squared_error",
+                            cv=GroupKFold(n_splits=k), groups=groups).mean()
+
+rf_sklearn.fit(X, y)
+print(f"scikit-learn RF on {len(X)} monitors across {groups.nunique()} HU6 basins")
+print(f"  naive KFold RMSE:              {naive_cv:.2f} µg/m³")
+print(f"  basin-grouped GroupKFold RMSE: {basin_cv:.2f} µg/m³")
+print("Feature importances:", dict(zip(feats, rf_sklearn.feature_importances_.round(3))))
 ```
 
-Two implementations, one dataset, one document — no exported CSVs, no
-copy-pasted numbers between two separate notebooks. That's objective 1 and
-objective 2 satisfied by the same six chunks.
+Two implementations, one dataset, one document, and no exported CSVs or
+numbers copied between notebooks. Objectives 1 and 2 are both covered by
+these chunks.
 
-## Step 4 — Predict across the covariate grid and rank the shortlist
+## Step 4 — Predict across the grid and rank the shortlist
 
 ```{r}
 #| label: lab-step4
 
-# [R] Step 4 — predict PM2.5 for every covariate cell, then rank the cells
-# with no sensor in them by predicted exposure (highest first = top candidates
-# for the next 10 sensors)
-predicted <- covariates_sf |>
-  mutate(pred_pm25 = predict(final_rf_fit, new_data = st_drop_geometry(covariates_sf))$.pred)
+# [R] Step 4 — predict every grid cell, then rank the ones far from any monitor
+grid_cov <- grid_ctr |>
+  st_drop_geometry() |>
+  left_join(py$grid_pts[, c("cell_id", "elevation_m")], by = "cell_id") |>
+  mutate(log_pop_density = log10(pop_density + 1)) |>
+  filter(!is.na(elevation_m), !is.na(dist_road_km), !is.na(log_pop_density))
 
-monitored_cells <- unique(na.omit(sensors_joined$cell_id))
+grid_cov$pred_pm25 <- predict(final_rf_fit, new_data = grid_cov)$.pred
+
+predicted <- grid |> inner_join(grid_cov, by = "cell_id")
+
+# "Unmonitored" = cell center more than min_gap_km from every existing monitor
+gap_m <- apply(st_distance(st_centroid(predicted), monitors_sf), 1, min)
+predicted$nearest_monitor_km <- as.numeric(gap_m) / 1000
 
 candidates <- predicted |>
-  filter(!(cell_id %in% monitored_cells)) |>
+  filter(nearest_monitor_km > min_gap_km) |>
   arrange(desc(pred_pm25))
 
-cat("Top 10 candidate locations for new sensors (unmonitored, highest predicted PM2.5):\n")
-print(st_drop_geometry(candidates) |> select(cell_id, pred_pm25) |> head(10))
+shortlist <- candidates |> slice_head(n = 10)
+
+cat("Top 10 candidate cells for new PM2.5 monitors:\n")
+print(st_drop_geometry(shortlist) |>
+        transmute(cell_id, pred_pm25 = round(pred_pm25, 1),
+                  nearest_monitor_km = round(nearest_monitor_km),
+                  over_naaqs = pred_pm25 > 9.0))
 ```
 
 ## Step 5 — Map it
@@ -487,35 +845,37 @@ print(st_drop_geometry(candidates) |> select(cell_id, pred_pm25) |> head(10))
 ```{r}
 #| label: lab-step5
 
-# [R] Step 5 — static map: predicted exposure surface + existing sensors +
-# the top-10 shortlist highlighted
+# [R] Step 5 — predicted surface + basins + existing monitors + shortlist
 library(tmap)
 tmap_mode("plot")
 
-shortlist <- candidates |> slice_head(n = 10)
-
 tm_shape(predicted) +
-  tm_polygons(fill = "pred_pm25", fill.scale = tm_scale_continuous(values = "brewer.or_rd"),
-              fill.legend = tm_legend(title = "Predicted PM2.5 (µg/m3)")) +
-  tm_shape(sensors_joined) +
+  tm_polygons(fill = "pred_pm25",
+              fill.scale = tm_scale_continuous(values = "brewer.or_rd"),
+              fill.legend = tm_legend(title = "Predicted annual\nPM2.5 (µg/m³)")) +
+  tm_shape(st_transform(basins, target_crs)) +
+  tm_borders(col = "grey40", lwd = 0.5) +
+  tm_shape(monitors_sf) +
   tm_dots(fill = "black", size = 0.3) +
-  tm_shape(shortlist) +
-  tm_dots(fill = "cyan", size = 0.5) +
-  tm_title("Predicted PM2.5 Exposure — Existing Sensors (black) vs. Shortlist (cyan)")
+  tm_shape(st_centroid(shortlist)) +
+  tm_dots(fill = "#00bcd4", size = 0.6) +
+  tm_title("Predicted annual PM2.5: existing monitors (black) vs. shortlist (cyan)")
 ```
 
 ### 🔧 Try it yourself
 
-Wrap Steps 1–4 into a single `predict_exposure(sensors, covariates, n_new)`
-function, so pointing this at next quarter's live sensor feed (once the
-synthetic pull in Section 2 is swapped for the real WFS/REST calls) is one
-function call, not five re-run chunks.
+1. Wrap Steps 1–4 into a single `predict_exposure(monitors, grid, n_new)`
+   function. Rerunning next year after EPA publishes new design values
+   should then take one function call, not five chunks.
+2. Add **longitude** as a fourth covariate (east vs. west of the Cascades).
+   Does the spatial-CV RMSE improve, or does the naive RMSE improve more?
+   What does that tell you?
 
 ```{r}
 #| eval: false
 
-predict_exposure <- function(sensors_sf, covariates_sf, n_new = 10) {
-  # 1. spatial join, 2. spatial CV check, 3. fit, 4. predict + rank
+predict_exposure <- function(monitors_sf, grid_sf, n_new = 10) {
+  # 1. join covariates, 2. spatial CV check, 3. fit, 4. predict + rank
   # — your implementation here, built from Steps 1–4 above
 }
 ```
@@ -528,37 +888,49 @@ predict_exposure <- function(sensors_sf, covariates_sf, n_new = 10) {
 
 # Section 4 — Extended Application {#sec-extended}
 
-*(~40–50 min — pick the option that matches what you want more practice on;
-everyone should look at Option 4 before Debrief since it's a warm-up for
-this module's homework, the Final Project Proposal.)*
+*(~40–50 min. Pick the option that matches what you want more practice on.)*
 
 ## Option 1 — Push the language bridge further
 
-Refit Step 3's model using a `scikit-learn` estimator that has no
-`tidymodels`/`ranger` equivalent you're comfortable with yet (a gradient
-boosting regressor, for instance), called entirely from an R chunk via
-`reticulate`, and compare its spatial-CV RMSE to the random forest above.
+Refit Step 3's model with a `scikit-learn` estimator you don't have a
+comfortable `tidymodels` equivalent for, such as a gradient boosting
+regressor. Compare its basin-grouped CV RMSE to the random forest.
 
 ```{python}
 #| eval: false
 
-# [Python] Option 1 — a scikit-learn estimator called from R via reticulate
+# [Python] Option 1 — a different scikit-learn estimator, same grouped CV
 from sklearn.ensemble import GradientBoostingRegressor
 
 gbr = GradientBoostingRegressor(random_state=9)
-gbr.fit(X, y)
+-cross_val_score(gbr, X, y, scoring="neg_root_mean_squared_error",
+                 cv=GroupKFold(n_splits=k), groups=groups).mean()
 ```
 
-## Option 2 — Simulate an IoT time series
+## Option 2 — Add the near-real-time feed
 
-Extend Section 2's single-snapshot sensor feed into a 24-hour synthetic time
-series per sensor (SensorThings-style `Observations` under each `Thing`), and
-recompute Step 1's join using a daily mean rather than a single reading. Does
-the shortlist in Step 4 change?
+EPA publishes the **last 24 hours of AirNow monitor data** as a public
+ArcGIS feature service, refreshed hourly. Open it, find the PM2.5 field
+names yourself (don't guess), and compare *tonight's* readings to each
+monitor's annual design value. Which monitors are running far above their
+annual level right now, and why might that be?
+
+```{r}
+#| eval: false
+
+# [R] Option 2 — inspect first, then query (arcgislayers or arc_query_sf both work)
+airnow_url <- paste0("https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/",
+                     "services/Air_Now_Monitor_Data_Public/FeatureServer")
+# library(arcgislayers); arc_open(airnow_url)   # lists the layers; open the PM2.5 one
+# ...then arc_select(<layer>, where = "...", filter_geom = study_bbox)
+```
 
 ## Option 3 — Bring your own reticulate bridge
 
-If you have a Python function from your own work, `source_python()` it into this R session and use its output somewhere in the pipeline above. The point is proving the bridge works on code you didn't write for this course.
+If you have a Python function from your own work, `source_python()` it into
+this R session and use its output somewhere in the pipeline above. The point
+is to prove the bridge works on code you didn't write for this course.
+
 ---
 
 # 🔍 Module 9 — Self-Check Questions
@@ -569,23 +941,23 @@ Work through these without looking at the chunks above, then verify.
 
 1. Name the four ways to run Python from R that Section 1 covers. Which one does this document use, and why does that mean you never had to switch a kernel?
 2. Inside a Python chunk, how do you reach an object created in the R chunk above it? How does it work in reverse?
-3. `sf` objects don't convert automatically across the bridge — what did Section 2/3 do instead to get spatial data from R to Python (or would need to, going the other way)?
+3. `sf` objects don't convert automatically across the bridge. What did Steps 2c and 2d pass across instead, and in which direction?
 
 **Web services**
 
-4. What's the practical difference between what a WMS request returns and what a WFS request returns? Which one could you have fed into Step 1's spatial join, and which one couldn't you?
-5. Where in this lab did IoT/SensorThings-style data show up, and what's the one structural difference between a SensorThings `Observation` and the single-reading sensor feed this notebook actually used?
+4. What's the practical difference between what the NLCD WMS returned in Step 2e and what the WBD WFS returned in Step 2b? Which one could you feed into a spatial join? And why did Step 2b write its own `GetFeature` request instead of letting `st_read()` do it?
+5. Steps 2a, 2c, and 2d all hit ArcGIS REST endpoints, but three different kinds (FeatureServer, MapServer, ImageServer). What did you get back from each, and which operation did you call?
+6. What does `exceededTransferLimit` tell you, and what would happen to your monitor count if your code ignored it?
 
 **Modeling and the naive-split trap**
 
-6. Why did the naive 5-fold CV in Step 2a report a *better* (lower) RMSE than the spatial block CV in Step 2b? Which number would actually hold up if you deployed this model on a genuinely new part of the city?
-7. What does `spatial_block_cv()` (R) and `GroupKFold` (Python) both guarantee that plain `vfold_cv()` / `KFold` don't?
-8. If you had 500 sensors instead of 22, would the naive-vs-spatial-block gap in Step 2 get bigger, smaller, or stay about the same? Why?
+7. Why did the naive 5-fold CV in Step 2a report a *better* (lower) RMSE than spatial block CV in Step 2b? Which number would hold up for an unmonitored valley?
+8. What do `spatial_block_cv()` (R) and `GroupKFold` grouped by HU6 basin (Python) both guarantee that plain `vfold_cv()` / `KFold` don't? Why are basins a reasonable grouping for *air* pollution?
 
 **Putting it together**
 
-9. Step 4 ranks *unmonitored* cells by predicted exposure. Why is it wrong to just rank cells by predicted exposure without first excluding the cells that already have a sensor?
-10. Name one thing that would break if you swapped the synthetic REST/WFS calls in Section 2 for real ones, that wouldn't show up until you actually tried it.
+9. Step 4 excludes cells within `min_gap_km` of an existing monitor before ranking. What would the top 10 look like without that filter, and why would that list be useless to a monitoring program?
+10. Name one thing in Section 2 that can break with live services that never broke with synthetic data, and say how this lab handles it.
 
 ---
 
@@ -605,25 +977,27 @@ chunk(s), one paragraph on why you picked that direction across the bridge.
 
 ### Extra Credit 2 — Naive vs. Spatial Cross-Validation, Your Data or Ours
 
-Using either this lab's synthetic sensors or a spatial dataset of your own
-with at least 15–20 observations, reproduce Step 2's comparison: a naive
-random CV RMSE and a spatial block CV RMSE for the same model. Submit: both
-numbers, the gap between them, and 2–3 sentences on whether that gap is big
-enough to change a real decision.
+Using this lab's monitors, or a spatial dataset of your own with at least
+15–20 observations, reproduce Step 2's comparison: a naive random CV RMSE
+and a spatial block CV RMSE for the same model. Submit: both numbers, the
+gap between them, and 2–3 sentences on whether the gap is big enough to
+change a real decision.
 
-### Extra Credit 3 — One Lab Piece, Applied to Your Project
+### Extra Credit 3 — One Web Service, Applied to Your Project
 
-Take one technique from this lab (a model with spatial CV, a reticulate
-handoff, or a REST/WFS pull) and run it on data from your final project.
-Submit: the chunk(s) and 2–3 sentences on whether it will stay in your final
-workflow.
+Find a public web service (REST, WFS, ImageServer, or OGC API) that serves
+data for your final project. Pull it with the try-live-then-cache pattern
+from Section 2a and run one technique from this lab on it. Submit: the
+chunk(s) and 2–3 sentences on whether it will stay in your final workflow.
 
 **To submit (optional):** render this `.qmd` (or your own `.qmd`/`.ipynb`) to
-HTML and upload both with your Final Project Proposal (Homework 9) in Canvas.
+HTML and upload both to the Module 9 lab extra-credit assignment in Canvas.
 Tag your repo commit `module9-lab` if you're using GitHub.
 
 ---
 
 **Stuck?** Post in Ed Discussion — tag `#module9`. Include your error
 message, which chunk failed, and your OS/environment (Positron's Console
-pane shows both the R and Python versions in use — paste that too).
+pane shows both the R and Python versions in use — paste that too). If a
+web-service chunk fails, include the URL it was calling. Half the time the
+fix is "the service was down; the cache fallback kicked in."
