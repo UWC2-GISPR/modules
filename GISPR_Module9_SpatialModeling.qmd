@@ -89,7 +89,7 @@ install.packages(setdiff(pkgs, rownames(installed.packages())))
 The first install of `tidymodels` pulls in many dependencies and can take several minutes.
 Use a current `reticulate` (1.47 or newer; run `install.packages("reticulate")` to update): older versions can't convert
 pandas 3 DataFrames back to R. On the Python side you need `requests`, `pandas`,
-`numpy`, and `scikit-learn`, which are all already in the ArcGIS Pro Python environment.
+`numpy`, and `scikit-learn`, which should all already be in your cloned ArcGIS Pro Python environment. If `scikit-learn` is missing just do the usual `conda install -c conda-forge scikit-learn`.
 
 ### Before you start — confirm your R ↔ Python bridge
 
@@ -98,7 +98,7 @@ Run this chunk first. If it errors, fix it now — don't wait for the Guided Lab
 ::: {.callout-important}
 ## Students: point `use_python()` at your cloned ArcGIS Pro environment
 
-The chunk below contains the **instructor's** Python path
+The chunk below contains **my** Python path
 (`C:/Users/mwebe/miniconda3/envs/ArcGIS_Clone/python.exe`), which won't exist on
 your computer. Before you run it, replace that path with the `python.exe` of
 **your own cloned ArcGIS Pro conda environment** (the clone you made in earlier
@@ -117,9 +117,9 @@ library(reticulate)
 # pandas, numpy, requests and scikit-learn). If you don't know it, run
 # `where python` in the ArcGIS Pro Python Command Prompt, or look in
 # C:/Users/<you>/AppData/Local/ESRI/conda/envs/<your-clone>/python.exe
-reticulate::use_python("C:/Users/mwebe/miniconda3/envs/ArcGIS_Clone/python.exe")
+suppressWarnings(reticulate::use_python("C:/Users/mwebe/miniconda3/envs/ArcGIS_Clone/python.exe"))
 
-py_config()
+suppressWarnings(py_config())
 # Expect: a Python path + version printed above.
 ```
 
@@ -617,7 +617,8 @@ library(leaflet)
 mon <- py$monitors_df
 
 leaflet() |>
-  addProviderTiles("CartoDB.Positron") |>
+  # Esri's light-gray basemap needs no API key (CartoDB's tiles can show a key warning)
+  addProviderTiles("Esri.WorldGrayCanvas") |>
   addWMSTiles(
     "https://www.mrlc.gov/geoserver/mrlc_display/NLCD_2021_Land_Cover_L48/wms",
     layers  = "NLCD_2021_Land_Cover_L48",
@@ -758,9 +759,7 @@ more honest number, and it's usually worse.
 
 ## Step 3 — Fit the model both ways: tidymodels *and* scikit-learn
 
-This is where the language bridge earns its keep. Fit the same random forest
-in R (`tidymodels`/`ranger`) and in Python (`scikit-learn`). Python gets a
-second kind of spatial CV: **grouping by HU6 basin**, the WFS layer from
+This is where we see the handoff between languages pay off for this scenario. Fit the same random forest in R (`tidymodels`/`ranger`) and in Python (`scikit-learn`). Python gets a second kind of spatial CV: **grouping by HU6 basin**, the WFS layer from
 Step 2b. A whole airshed is held out at a time.
 
 ```{r}
